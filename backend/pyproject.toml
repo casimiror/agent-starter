@@ -1,0 +1,44 @@
+[project]
+name = "agent-starter"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.1",
+    "fastapi[standard]>=0.141",
+    "langchain>=1.4.7",
+    "langchain-anthropic>=1.7.6",
+    "langchain-openai>=1.7.2",
+    "langfuse>=5.0.4",
+    "langgraph>=1.2.16",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.16.1",
+    "pydantic[email]>=2.14.1",
+    "slowapi>=0.1.10",
+    "sqlalchemy>=2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.fastapi]
+entrypoint = "app.main:app"
+
+# Vercel (Root Directory = backend): FastAPI preset, app.main:app is auto-detected.
+[tool.vercel]
+entrypoint = "app.main:app"
+
+[tool.vercel.scripts]
+build = "sh vercel-build.sh"

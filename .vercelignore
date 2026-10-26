@@ -1,0 +1,9 @@
+# Only used by `vercel deploy` from the CLI (Git deployments clone the repo).
+.env
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist
+backend/static
