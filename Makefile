@@ -6,7 +6,7 @@ API := $(COMPOSE) run --rm api
 API_NODB := $(COMPOSE) run --rm --no-deps api
 
 .PHONY: help env up dev down reset-db logs test lint format migrate migration migrate-check \
-	migrate-roundtrip migrate-sql migrate-supabase ui-build psql check ci eval lock
+	migrate-roundtrip migrate-sql migrate-supabase ui-build db-port psql check ci eval lock
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -64,6 +64,10 @@ eval: ## Evaluate the real agent on the dataset (LLM calls!): make eval args="--
 
 ui-build: ## Build the React app (frontend/dist)
 	$(COMPOSE) run --rm --no-deps web sh -c "npm install && npm run build"
+
+db-port: ## Print the localhost port of the local db (for a DB GUI)
+	$(COMPOSE) up -d --wait db
+	@$(COMPOSE) port db 5432
 
 psql: ## SQL shell on the local db
 	$(COMPOSE) up -d --wait db

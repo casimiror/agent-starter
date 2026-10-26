@@ -67,6 +67,7 @@ Everything runs in Docker through `make` (`make help`).
 | `make migration m="..."` | new Alembic revision from the models; read and tidy it |
 | `make eval` | evaluate the agent on the dataset (LLM calls). Local only |
 | `make down` / `make reset-db` | stop containers / also wipe the local database |
+| `make db-port` | the localhost port of the local database (random unless `POSTGRES_PORT` is set) |
 
 ### Configuration
 
