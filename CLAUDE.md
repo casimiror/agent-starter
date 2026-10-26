@@ -33,7 +33,8 @@ Docker locally, Vercel + Supabase in production. Do not swap a piece without upd
 - Open a PR with `gh pr create`; merge when CI (`make ci` in GitHub Actions) passes. Merging
   migrates Supabase automatically, so migrations must be backward compatible (add first, remove
   later). Details: `docs/conventions.md`.
-- New tool: `/new-tool`. New agent: `/new-agent`. Before committing: `/check`.
+- Start a project: `/kickoff`. New tool: `/new-tool` (recipes). New agent: `/new-agent`. Deploy:
+  `/deploy-setup`. Before committing: `/check`.
 
 ## Commands — everything runs in Docker
 

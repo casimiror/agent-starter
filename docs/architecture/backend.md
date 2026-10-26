@@ -70,7 +70,9 @@ Graph diagram and how to modify or create agents: [`backend/app/agents/README.md
 
 ## Tools
 
-The template's agent has **no tools**: each project adds its own with `/new-tool`. A tool is one
+The template's agent has **no tools**: each project adds its own with `/new-tool`, which builds
+each one from a recipe in `.claude/skills/new-tool/recipes/` (`knowledge-search`, `db-write`,
+`config-link`, `http-api`, `custom`); `/kickoff` decides the tools per agent with you. A tool is one
 file in `app/tools/<area>/`, `build_<name>_tool(deps) -> BaseTool` built with `ToolBuilder`, and is
 registered in `build_assistant_tools` (`app/tools/registry.py`). What it needs (repositories,
 clients, settings) goes in `ToolDeps`, wired in `app/api/deps.py` (`get_tool_deps`) and, for
