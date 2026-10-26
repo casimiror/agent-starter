@@ -57,7 +57,7 @@ def test_trace_turn_sets_user_and_session(monkeypatch):
 
     assert calls[0]["user_id"] == "visitor-1" and calls[0]["session_id"] == "conv-1"
     assert client.started[0]["input"] == "hi"
-    metadata = {"blocked_by": "price in output", "tools_called": [], "context": ""}
+    metadata = {"blocked_by": "price in output", "tools_called": [], "context": "", "model": None}
     expected = {"output": "hello", "metadata": metadata}
     assert client.span.updates == [expected]
 
@@ -134,3 +134,25 @@ def test_turn_span_carries_tools_and_context_for_the_online_judge(monkeypatch):
     metadata = client.span.updates[0]["metadata"]
     assert metadata["tools_called"] == ["search_knowledge"]
     assert metadata["context"] == "<search_knowledge>\n[faq › Pricing]\nOn a call."
+
+
+class FallbackAgent:
+    def invoke(self, state, config):
+        reply = AIMessage("ok", response_metadata={"model_name": "openai/gpt-5.6-mini"})
+        return {"messages": [*state["messages"], reply], "blocked_by": None}
+
+
+def test_a_turn_answered_by_a_fallback_is_logged_as_a_warning(monkeypatch, caplog):
+    client = FakeLangfuse()
+    monkeypatch.setattr(observability, "_client", client)
+    _record_propagation(monkeypatch)
+    service = ChatService(FakeConversations(), FallbackAgent(), 10, "google/gemini-3.5-flash-lite")
+
+    with caplog.at_level("INFO", logger="app.chat"):
+        service.handle_turn(None, "my email is ana@acme.com")
+
+    [record] = caplog.records
+    assert record.levelname == "WARNING" and record.fallback is True
+    assert record.model == "openai/gpt-5.6-mini"
+    assert client.span.updates[0]["metadata"]["model"] == "openai/gpt-5.6-mini"
+    assert "ana@acme.com" not in caplog.text  # the user's text is never logged

@@ -37,12 +37,15 @@ class TurnTrace:
         blocked_by: str | None,
         tools_called: list[str] | None = None,
         context: str = "",
+        model: str | None = None,
     ) -> None:
         """`tools_called` and `context` (the tool results) are for the online judge in Langfuse:
-        an observation-level evaluator only sees this span, not the LangChain spans under it."""
+        an observation-level evaluator only sees this span, not the LangChain spans under it.
+        `model` is the one that answered, so turns served by a fallback can be filtered."""
         if self._span is not None:
             metadata = {"blocked_by": blocked_by, "tools_called": tools_called or []}
-            self._span.update(output=reply, metadata={**metadata, "context": context})
+            metadata |= {"context": context, "model": model}
+            self._span.update(output=reply, metadata=metadata)
 
 
 @contextmanager
