@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.assistant_agent import build_assistant_agent
 from app.core.config import get_settings
-from app.core.llm import build_chat_model
+from app.core.llm import build_chat_models
 from app.db.daos.conversation_dao import ConversationDAO
 from app.db.daos.message_dao import MessageDAO
 from app.db.daos.message_feedback_dao import MessageFeedbackDAO
@@ -41,8 +41,8 @@ def get_chat_service() -> ChatService:
 
     conversations = ConversationRepository(ConversationDAO(sessions), MessageDAO(sessions))
     tools = build_assistant_tools(get_tool_deps())
-    agent = build_assistant_agent(build_chat_model(settings), tools, settings)
-    return ChatService(conversations, agent, settings.max_history_messages)
+    agent = build_assistant_agent(build_chat_models(settings), tools, settings)
+    return ChatService(conversations, agent, settings.max_history_messages, settings.llm_model)
 
 
 @lru_cache

@@ -27,6 +27,7 @@ class AgentBuilder:
     def __init__(self, name: str) -> None:
         self._name = name
         self._llm: BaseChatModel | None = None
+        self._fallbacks: list[BaseChatModel] = []
         self._system_prompt = ""
         self._tools: list[BaseTool] = []
         self._input_guardrails: list[Guardrail] = []
@@ -34,6 +35,11 @@ class AgentBuilder:
 
     def with_llm(self, llm: BaseChatModel) -> Self:
         self._llm = llm
+        return self
+
+    def with_fallbacks(self, llms: list[BaseChatModel]) -> Self:
+        """Models tried in order when the primary one raises (after its own retries)."""
+        self._fallbacks = llms
         return self
 
     def with_prompt_file(self, filename: str, **variables: str) -> Self:
@@ -55,7 +61,11 @@ class AgentBuilder:
     def build(self) -> CompiledStateGraph:
         if self._llm is None:
             raise ValueError(f"agent {self._name!r} needs an LLM")
-        llm = self._llm.bind_tools(self._tools) if self._tools else self._llm
+        # Tools are bound to every model, so a fallback can call them too.
+        primary, *fallbacks = [
+            m.bind_tools(self._tools) if self._tools else m for m in [self._llm, *self._fallbacks]
+        ]
+        llm = primary.with_fallbacks(fallbacks) if fallbacks else primary
         system = SystemMessage(self._system_prompt)
         input_guardrails, output_guardrails = self._input_guardrails, self._output_guardrails
 

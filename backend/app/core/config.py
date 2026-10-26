@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +18,17 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str | None = None
     llm_temperature: float = 0.2
+    # Each model retries timeouts, 429 and 5xx with exponential backoff (the client's own retry),
+    # then the agent moves to the next model in LLM_FALLBACKS.
+    llm_timeout: float = 25.0
+    llm_max_retries: int = 1
+    # "provider:model" entries in order, e.g.
+    # LLM_FALLBACKS='["openrouter:openai/gpt-5.6-mini", "anthropic:claude-haiku-5-5"]'.
+    # Same provider as LLM_PROVIDER: uses LLM_API_KEY. Another provider: its own key below.
+    llm_fallbacks: list[str] = []
+    openrouter_api_key: str = ""
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
 
     # Any Postgres URL (normalized in app/db/url.py). Default: the docker compose `db` service;
     # keep it in sync with docker-compose.yml. On Vercel: Supabase's transaction pooler, either as
@@ -46,8 +58,16 @@ class Settings(BaseSettings):
     rate_limit_chat: str = "10/minute"
     # Votes are cheap (no LLM call) but still writes: looser limit than chat.
     rate_limit_feedback: str = "30/minute"
+    # Where slowapi counts requests. memory:// is per process (per instance on Vercel); a Redis
+    # URL (e.g. Upstash, rediss://...) makes the limit global across instances.
+    rate_limit_storage_uri: str = "memory://"
     max_input_chars: int = 2000
     max_history_messages: int = 20
+
+    # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
+    # easier to read in a local terminal.
+    log_level: str = "INFO"
+    log_format: Literal["json", "text"] = "json"
 
     # Shown in the API title and the agent's Langfuse traces. The UI's name lives in
     # frontend/src/config.ts.
