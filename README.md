@@ -5,6 +5,26 @@ the architecture, the tooling and the deploy already in place, and spend the tim
 
 **Repository**: https://github.com/casimiror/agent-starter
 
+## Quick start
+
+```bash
+# 1. Create your project from this template (or on GitHub: Use this template → Create a new repository)
+gh repo create <your-project> --template casimiror/agent-starter --private --clone
+cd <your-project>
+
+# 2. Configure and run it: a generic assistant on http://localhost:8000
+make env          # creates .env: put your OpenRouter key in LLM_API_KEY
+make up
+```
+
+```text
+# 3. In Claude Code, inside the project:
+/kickoff <the brief, or a path to it>    # interview -> plan.md (you approve) -> one PR per step
+/deploy-setup                            # GitHub environment, Supabase, Vercel, Langfuse
+```
+
+Details of each step: [Start a project](#start-a-project).
+
 ## What you get
 
 - **FastAPI** serves `POST /api/chat`, feedback endpoints and the built React UI
