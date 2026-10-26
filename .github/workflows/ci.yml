@@ -1,0 +1,89 @@
+name: CI
+
+# Same commands as local development: everything runs through docker compose via make
+# (see CLAUDE.md > Commands), so CI and laptops can't drift apart.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint, tests, migrations, UI build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Compose reads .env; the example has safe placeholders and points DATABASE_URL at the
+      # compose `db` service. No secrets needed: tests never call a real LLM.
+      - name: Create .env
+        run: cp .env.example .env
+
+      - name: Build images
+        run: docker compose build api
+
+      # Never `make eval` here: it calls the shared, rate-limited LLM for every case (the CLI
+      # also refuses to run when CI=true). Evaluations are run locally only.
+      - name: make ci
+        run: make ci
+
+      - name: Production image builds
+        run: docker compose build app
+
+      - name: Stop containers
+        if: always()
+        run: docker compose --profile dev down -v
+
+  # Merging to main deploys: Vercel builds main on its own, in parallel with this job. Migrations
+  # must therefore be backward compatible (add first, remove in a later release); see
+  # docs/deployment.md.
+  migrate-supabase:
+    name: migrate Supabase
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The secret lives in the `production` environment: only jobs on main can read it, PRs never.
+    environment: production
+    concurrency:
+      group: production-migrate
+      cancel-in-progress: false  # never interrupt a migration halfway
+    steps:
+      - uses: actions/checkout@v4
+
+      # Session pooler URL (port 5432, IPv4). GitHub masks the value in logs. A new project has no
+      # database yet: without the secret the job skips the migration instead of failing
+      # (`/deploy-setup` sets it up).
+      - name: Create .env
+        id: env
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::warning::SUPABASE_DB_URL is not set in the production environment: migration skipped"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cp .env.example .env
+          echo "SUPABASE_DB_URL=$SUPABASE_DB_URL" >> .env
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        if: steps.env.outputs.configured == 'true'
+        run: docker compose build api
+
+      - name: alembic upgrade head
+        if: steps.env.outputs.configured == 'true'
+        run: make migrate-supabase
+
+      - name: Current revision
+        if: steps.env.outputs.configured == 'true'
+        run: docker compose run --rm --no-deps api sh -c 'DATABASE_URL="$SUPABASE_DB_URL" alembic current'

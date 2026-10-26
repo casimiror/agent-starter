@@ -1,0 +1,89 @@
+# Every command runs through docker compose (see CLAUDE.md). Two ways to run the app:
+#   prod-like:  docker compose up --build           -> db, migrate, app (:8000)
+#   dev:        docker compose up --build api web   -> db, api with reload (:8001), vite (:5173)
+# Tools (tests, lint, alembic) run in the `api` image: docker compose run --rm api <cmd>
+# DATABASE_URL comes from .env (default: the `db` service below; point it at Supabase to use it).
+
+services:
+  # Local stand-in for Supabase (same major version). Data persists in the `pgdata` volume;
+  # `docker compose down -v` wipes it.
+  db:
+    image: postgres:17-alpine
+    # Local-only credentials (not the postgres defaults). DATABASE_URL in .env must match. They are
+    # applied when the volume is first created: after changing them run `make reset-db`.
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_local_pw
+      POSTGRES_DB: app
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # --- prod-like ---------------------------------------------------------------------------
+
+  # One-shot: applies Alembic migrations before the app starts.
+  migrate:
+    build: .
+    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- dev and tools (profile "dev": only started when named) -------------------------------
+
+  # FastAPI with reload, source bind-mounted. Applies migrations on start.
+  api:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: dev
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    command: ["sh", "-c", "alembic upgrade head && fastapi dev --host 0.0.0.0 --port 8000"]
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Vite dev server; proxies /api to the `api` service.
+  web:
+    profiles: ["dev"]
+    image: node:24-slim
+    working_dir: /frontend
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    volumes:
+      - ./frontend:/frontend
+      # Linux node_modules stay in the container, separate from any host install.
+      - /frontend/node_modules
+    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
