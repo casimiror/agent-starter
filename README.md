@@ -20,7 +20,9 @@ the architecture, the tooling and the deploy already in place, and spend the tim
 - **Evaluation**: dataset, RAG metrics and an LLM judge on the real agent, a `/eval` page,
   Langfuse experiments, and prompts for an online judge on production traffic:
   [backend/app/evals/](backend/app/evals/README.md).
-- **Rate limiting** per IP on `/api/chat`.
+- **Resilience**: per-model timeout and retries, then fallback models (another provider too).
+- **Structured logs**: JSON lines with a request id, no PII.
+- **Rate limiting** per IP on `/api/chat`, global with Redis (`RATE_LIMIT_STORAGE_URI`).
 - **CI**: lint, tests, migrations and UI build on every PR; Supabase migrated automatically on merge.
 - **Claude Code setup**: `CLAUDE.md`, path rules, `/new-tool`, `/new-agent`, `/check` and a
   `verifier` subagent.
@@ -58,7 +60,9 @@ Everything runs in Docker through `make` (`make help`).
 
 All settings come from env (`backend/app/core/config.py`, documented in `.env.example`):
 
-- **LLM**: `LLM_PROVIDER` (`openrouter`, `anthropic`, `openai`), `LLM_MODEL`, `LLM_API_KEY`.
+- **LLM**: `LLM_PROVIDER` (`openrouter`, `anthropic`, `openai`), `LLM_MODEL`, `LLM_API_KEY`;
+  resilience: `LLM_TIMEOUT`, `LLM_MAX_RETRIES`, `LLM_FALLBACKS` (models tried in order when one fails).
+- **Logs**: `LOG_FORMAT` (`json` in production, `text` locally), `LOG_LEVEL`.
 - **App**: `APP_NAME`, `ALLOWED_LINKS` (JSON list of URL prefixes the agent may write).
 - **Database**: `DATABASE_URL` (local compose `db` by default), `SUPABASE_DB_URL` for migrations.
 - **Langfuse**: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` (optional).

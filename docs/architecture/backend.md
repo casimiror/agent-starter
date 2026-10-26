@@ -42,7 +42,9 @@ Wiring of concrete classes happens **only** in `app/api/deps.py`.
 | `PUT /api/messages/{id}/feedback` | `{"rating": "up" \| "down"}` | 204; 404 if `id` isn't an assistant message |
 | `DELETE /api/messages/{id}/feedback` | | 204 (idempotent); 404 as above |
 
-Limits: `RATE_LIMIT_CHAT` (10/min) and `RATE_LIMIT_FEEDBACK` (30/min) per client IP.
+Limits: `RATE_LIMIT_CHAT` (10/min) and `RATE_LIMIT_FEEDBACK` (30/min) per client IP, counted in
+`RATE_LIMIT_STORAGE_URI` (`memory://` per process by default; a Redis URL makes it global across
+Vercel instances). Every `/api/*` response carries an `x-request-id` header (see Logging).
 
 `/api/evals/*` exists only with `EVAL_ENABLED=true` (local): see `docs/evaluation.md`.
 
@@ -56,10 +58,12 @@ Limits: `RATE_LIMIT_CHAT` (10/min) and `RATE_LIMIT_FEEDBACK` (30/min) per client
    (`session_id = conversation_id`, `user_id = visitor_id`).
 4. The graph runs: `input_guard -> agent <-> tools -> output_guard`.
    - Input guardrails: max length, prompt-injection heuristics. Blocked -> canned reply, no LLM call.
-   - Agent: LLM with tools bound; loops through `ToolNode` until it answers.
+   - Agent: LLM with tools bound; loops through `ToolNode` until it answers. A failing model falls
+     back to the next one (see Resilience).
    - Output guardrails: only allowed URLs. Blocked -> the reply is replaced.
 5. User and assistant messages are persisted **after** the turn succeeds (no half turns); the
-   assistant message's id is returned as `message_id` so the UI can attach feedback to it.
+   assistant message's id is returned as `message_id` so the UI can attach feedback to it. One
+   `chat turn` log line records tools, guardrail, model and latency (never the text).
 6. The route schedules `observability.flush` as a background task (serverless instances can freeze).
 
 Graph diagram and how to modify or create agents: [`backend/app/agents/README.md`](../../backend/app/agents/README.md).
@@ -105,8 +109,34 @@ the vote is removed. Only assistant messages are rateable (`MessageNotRateableEr
 
 `app/core/config.py` (`Settings`, pydantic-settings). Everything comes from env; `.env.example`
 documents each variable. Notable aliases: `DATABASE_URL` falls back to `POSTGRES_URL` (Vercel's
-Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` sets `serverless`. `APP_NAME` names the API
-and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL prefixes the agent may write.
+Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` sets `serverless`.
+`APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
+prefixes the agent may write.
+
+## Resilience
+
+`app/core/llm.py` builds every model with `LLM_TIMEOUT` and `LLM_MAX_RETRIES`: the provider client
+itself retries timeouts, 429 and 5xx with exponential backoff. If the model still fails, the agent
+tries `LLM_FALLBACKS` in order (`build_chat_models`; `AgentBuilder.with_fallbacks` binds the tools to
+each one, so a fallback can call them too). A fallback on the same provider reuses `LLM_API_KEY`;
+on another provider it needs that provider's key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`), checked at startup. The model that answered goes to the `chat-turn` span
+(`model`) and the log line; a turn answered by a fallback is logged as a warning (`fallback: true`).
+
+## Logging
+
+`app/core/logging.py`, configured in `create_app`: stdout, one JSON object per line
+(`LOG_FORMAT=json`, what Vercel collects) or readable text locally (`LOG_FORMAT=text`).
+
+- Log with `logging.getLogger("app.<area>")` and fields in `extra`, never values formatted into the
+  message: `log.info("chat turn", extra={"latency_ms": 812})`.
+- `app/api/middleware.py` (`access_log`) gives each `/api/*` request an id (the caller's
+  `x-request-id` or a new one), adds it to every log line of that request, returns it in the
+  `x-request-id` header and logs method, path, status and duration (warning from 400 up).
+  Unhandled exceptions are logged with their traceback.
+- **No PII**: never log user text, replies or tool arguments; emails are masked (`[email]`) as a
+  last line of defence.
+- Noisy libraries (`httpx`, `openai`, `anthropic`, `uvicorn.access`) are raised to WARNING.
 
 ## Observability
 
