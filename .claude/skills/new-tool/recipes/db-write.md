@@ -128,8 +128,10 @@ the model, which asks again.
 
 - `app/tools/registry.py`: add `<things>: <Thing>Repository` to `ToolDeps` and the tool to
   `build_<agent>_tools`.
-- `app/api/deps.py` `get_tool_deps`: `<Thing>Repository(<Thing>DAO(get_sessions()))`.
-- `app/evals/agent_run.py` `eval_tool_deps`: `RecordingRepository()` in its place, so evaluations
+- `app/api/deps.py` `get_tool_deps`: add
+  `<things>=<Thing>Repository(<Thing>DAO(get_sessions()))` to the `ToolDeps(...)` call (keyword
+  arguments: keep the dependencies other tools already pass).
+- `app/evals/agent_run.py` `eval_tool_deps`: `<things>=RecordingRepository()`, so evaluations
   never write to Postgres.
 
 ## Tests: `backend/tests/test_<area>_tools.py`

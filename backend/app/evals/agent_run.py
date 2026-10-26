@@ -54,7 +54,7 @@ class AgentRun:
 def eval_tool_deps(settings: Settings) -> ToolDeps:
     """The tools' dependencies for evaluations: a tool that writes gets a RecordingRepository
     here instead of its Postgres repository."""
-    return ToolDeps(settings)
+    return ToolDeps(settings=settings)
 
 
 def build_eval_agent(settings: Settings) -> CompiledStateGraph:

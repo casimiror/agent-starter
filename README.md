@@ -10,7 +10,7 @@ the architecture, the tooling and the deploy already in place, and spend the tim
 - **FastAPI** serves `POST /api/chat`, feedback endpoints and the built React UI
   (`app.frontend()`), one container locally and one Vercel function in production.
 - **LangGraph** agent built with `AgentBuilder`: `input_guard -> agent <-> tools -> output_guard`.
-  It ships without domain tools: add them with `/new-tool`. Diagram and how to modify or create
+  Tools are added per project with `/new-tool` (recipes). Diagram and how to modify or create
   agents: [backend/app/agents/](backend/app/agents/README.md).
 - **Guardrails**: input length, prompt-injection heuristics, only `ALLOWED_LINKS` in replies.
 - **Data**: Postgres (Supabase in production) through DAOs and repositories; Alembic migrations

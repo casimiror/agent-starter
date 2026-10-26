@@ -54,7 +54,7 @@ On the deployed app the router is not mounted and the page says evaluation is of
 
 ## Dataset
 
-`backend/app/evals/dataset.jsonl`, one case per line. The template ships 5 cases that need no tools
+`backend/app/evals/dataset.jsonl`, one case per line. A new project starts from 5 cases that need no tools
 (scope, prompt injection, invented link, two off-topic); `/kickoff` writes the project's dataset
 from the scenarios in `plan.md`. Categories (`app/evals/dataset.py`):
 

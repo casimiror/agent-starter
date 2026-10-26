@@ -49,7 +49,7 @@
   <text x="525" y="396" class="title" text-anchor="middle">tools (ToolNode)</text>
   <text x="525" y="420" class="sub" text-anchor="middle">the project's tools, one file each</text>
   <text x="525" y="440" class="sub" text-anchor="middle">in app/tools/&lt;area&gt;/, added with /new-tool</text>
-  <text x="525" y="460" class="sub" text-anchor="middle">(none in the template: the agent</text>
+  <text x="525" y="460" class="sub" text-anchor="middle">(a new project has none: the agent</text>
   <text x="525" y="480" class="sub" text-anchor="middle">goes straight to the answer)</text>
   <text x="525" y="504" class="small" text-anchor="middle">built with ToolBuilder · app/tools/registry.py</text>
 

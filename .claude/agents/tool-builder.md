@@ -7,7 +7,8 @@ You build exactly one tool in this agent project. You receive a filled spec (nam
 does, trigger, args, reads/writes, source, failure codes, personal data) and the recipe to follow.
 
 Before writing code, read:
-1. `CLAUDE.md` (commands run only through `make` / `docker compose`; never `python`, `pytest`,
+1. `CLAUDE.md` (commands run only through `make` / `docker compose`; never `python` (not even to
+   edit text: use the Read, Edit and Write tools), `pytest`,
    `uv run` or `npm` on the host).
 2. `.claude/skills/new-tool/SKILL.md` (the rules every tool follows) and the recipe you were given
    in `.claude/skills/new-tool/recipes/`.

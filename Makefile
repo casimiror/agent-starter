@@ -69,7 +69,7 @@ psql: ## SQL shell on the local db
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) exec db sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
-check: lint test migrate-check ui-build ## Everything /check runs before a commit
+check: lint test migrate migrate-check ui-build ## Everything /check runs before a commit (migrates the local db first)
 
 ci: lint test migrate migrate-check migrate-roundtrip ui-build ## What GitHub Actions runs (fresh db: migrate first)
 

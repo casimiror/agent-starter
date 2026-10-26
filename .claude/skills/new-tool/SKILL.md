@@ -51,13 +51,17 @@ names and fields to the spec, and never copy placeholder text (`<...>`) into the
 5. Return short strings; failures start with an UPPERCASE code the prompt can react to
    (`NO_RESULTS:`, `UNAVAILABLE:`).
 6. Register it in `build_<agent>_tools` (`app/tools/registry.py`). A new dependency goes in
-   `ToolDeps`, in `get_tool_deps` (`app/api/deps.py`) and in `eval_tool_deps`
-   (`app/evals/agent_run.py`, with an in-memory stand-in so evaluations never write to Postgres or
-   call the external system).
+   `ToolDeps` (keyword-only: callers name each one), in `get_tool_deps` (`app/api/deps.py`) and in
+   `eval_tool_deps` (`app/evals/agent_run.py`, with an in-memory stand-in so evaluations never
+   write to Postgres or call the external system). Extend these files; other tools are already
+   there.
 7. A unit test in `backend/tests/test_<area>_tools.py` calling `tool.invoke({...})` with a fake
    dependency. No real LLM, no network.
 8. Say when to use it in the agent's prompt (`app/agents/prompts/<agent>.md`, "How you answer").
-9. Add 2-3 cases to `app/evals/dataset.jsonl` that expect it (`expected_tools`), and update the
-   judge's rubric (`app/evals/prompts/judge.md`) if it adds a behaviour.
-10. Update `plan.md` (Agents and tools) and `docs/architecture/backend.md` if the recipe says so.
-11. `/check`, then commit on the tool's own branch (`feat/<tool-name>-tool`).
+9. Add 2-3 cases to `app/evals/dataset.jsonl` that expect it (`expected_tools`), plus one for its
+   failure code. `scenario` is the `plan.md` scenario number, or `null` if there is none. Update
+   the judge's rubric (`app/evals/prompts/judge.md`) if the tool adds a behaviour.
+10. Update `plan.md` (the tool's row in "Agents and tools") and the docs the recipe names.
+11. Edit files with the editor tools (Read, Edit, Write), never with `python` on the host.
+12. `/check`. Then commit on the tool's own branch (`feat/<tool-name>-tool`), open the PR and merge
+    when CI passes. When `tool-builder` built it, the caller (you, or `/kickoff`) commits.

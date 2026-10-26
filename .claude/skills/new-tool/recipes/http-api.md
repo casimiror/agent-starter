@@ -104,10 +104,11 @@ def build_<tool_name>_tool(client: <Service>Client) -> BaseTool:
 
 - `app/tools/registry.py`: add `<service>: <Service>Client` to `ToolDeps` and the tool to
   `build_<agent>_tools`.
-- `app/api/deps.py` `get_tool_deps`: build the client from settings.
-- `app/evals/agent_run.py` `eval_tool_deps`: a stand-in client with canned answers for the ids the
-  eval cases use (evaluations never call the real API). Keep it in `app/evals/` (e.g.
-  `stubs.py`).
+- `app/api/deps.py` `get_tool_deps`: add `<service>=<Service>Client(...)` built from settings to
+  the `ToolDeps(...)` call (keyword arguments).
+- `app/evals/agent_run.py` `eval_tool_deps`: `<service>=` a stand-in client with canned answers
+  for the ids the eval cases use (evaluations never call the real API). Keep it in `app/evals/`
+  (e.g. `stubs.py`).
 
 ## Tests: `backend/tests/test_<area>_tools.py`
 
