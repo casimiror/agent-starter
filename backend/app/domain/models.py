@@ -22,27 +22,6 @@ class Conversation(BaseModel):
     created_at: datetime
 
 
-class Escalation(BaseModel):
-    id: UUID
-    conversation_id: UUID
-    name: str | None
-    email: str
-    question: str
-    created_at: datetime
-
-
-class ContactRequest(BaseModel):
-    id: UUID
-    conversation_id: UUID
-    first_name: str
-    last_name: str
-    company: str
-    email: str
-    phone: str | None
-    message: str
-    created_at: datetime
-
-
 class MessageFeedback(BaseModel):
     id: UUID
     message_id: UUID

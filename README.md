@@ -24,8 +24,7 @@ the architecture, the tooling and the deploy already in place, and spend the tim
 - **Structured logs**: JSON lines with a request id, no PII.
 - **Rate limiting** per IP on `/api/chat`, global with Redis (`RATE_LIMIT_STORAGE_URI`).
 - **CI**: lint, tests, migrations and UI build on every PR; Supabase migrated automatically on merge.
-- **Claude Code setup**: `CLAUDE.md`, path rules, `/new-tool`, `/new-agent`, `/check` and a
-  `verifier` subagent.
+- **Claude Code setup**: `CLAUDE.md`, path rules, and the skills and subagents below.
 
 Documentation: [docs/](docs/README.md) (architecture, design, conventions, database, deployment,
 evaluation). Project plan: [plan.md](plan.md) (a template to fill).
@@ -35,11 +34,24 @@ evaluation). Project plan: [plan.md](plan.md) (a template to fill).
 1. On GitHub: **Use this template → Create a new repository**, then clone it.
 2. `make env`, put your OpenRouter key in `LLM_API_KEY`, then `make up`: the app runs on
    http://localhost:8000 with a generic assistant.
-3. Fill `plan.md` (goal, scenarios, agents and tools), then the prompt
-   (`backend/app/agents/prompts/assistant.md`), the UI texts (`frontend/src/config.ts`) and
-   `APP_NAME` / `ALLOWED_LINKS` in `.env`.
-4. Add tools with `/new-tool`, and eval cases for each scenario.
-5. Deploy: [docs/deployment.md](docs/deployment.md) (GitHub environment, Supabase, Vercel).
+3. In Claude Code: `/kickoff <the brief, or a path to it>`. It interviews you about what the brief
+   leaves open (scenarios, agents, the tools each agent needs), writes `plan.md` and **waits for
+   your approval**, then builds the project in one PR per step: identity and prompt, each tool from
+   its recipe, the evaluation dataset.
+4. `/deploy-setup`: GitHub environment, Supabase, Vercel and Langfuse. It runs the safe steps and
+   tells you the ones that need your accounts or secrets.
+
+### Claude Code skills and subagents
+
+| | Does |
+| --- | --- |
+| `/kickoff <brief>` | brief → interview → `plan.md` (approved by you) → one PR per step |
+| `/new-tool <name> <what it does>` | a tool from a recipe: `knowledge-search` (documents + BM25, turns on the RAG evaluation), `db-write` (a table + repository), `config-link` (data from settings), `http-api` (an external API through a client), `custom` |
+| `/new-agent <name> <job>` | another agent built with `AgentBuilder` |
+| `/deploy-setup` | production: GitHub environment, Supabase, Vercel, Langfuse online judge |
+| `/check` | lint, tests, migrations and UI build, then the `verifier` review |
+| `tool-builder` (subagent) | implements one tool from its spec and recipe |
+| `verifier` (subagent) | reviews a diff for layering, guardrail, data and PII mistakes |
 
 ## Run
 
