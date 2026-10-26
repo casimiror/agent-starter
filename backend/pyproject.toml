@@ -13,6 +13,7 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.16.1",
     "pydantic[email]>=2.14.1",
+    "redis>=5",
     "slowapi>=0.1.10",
     "sqlalchemy>=2",
 ]
