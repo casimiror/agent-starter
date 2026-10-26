@@ -3,8 +3,14 @@
 The tool stores something for the team to follow up: an escalation, a lead, a ticket, a request.
 One table, one DAO, one repository, one tool. Read `docs/database.md` first.
 
-Placeholders: `<thing>` singular snake_case (`escalation`), `<Thing>` its class name
-(`Escalation`), `<things>` the table (`escalations`).
+Placeholders: `<thing>` singular snake_case (`ticket`), `<Thing>` its class name (`Ticket`),
+`<things>` the table (`tickets`), `<area>` the tool's folder: one per domain noun (`tickets`), shared
+by the tools about it and by `tests/test_<area>_tools.py`.
+
+**Columns come from the spec's args**: one column per arg (`Text` for free text, nullable for
+optional args), plus `conversation_id` and a `status` whose values come from the spec (the team's
+workflow, e.g. `open`, `in_progress`, `closed`). The snippets below show `email`, `issue` and `name`
+as examples only.
 
 ## Schema
 
@@ -16,22 +22,26 @@ class <Thing>Row(TimestampedMixin, Base):
 
     __tablename__ = "<things>"
     __table_args__ = (
-        CheckConstraint("status in ('open', 'done')", name="<things>_status_check"),
+        CheckConstraint(
+            "status in ('open', 'in_progress', 'closed')", name="<things>_status_check"
+        ),
     )
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
     email: Mapped[str] = mapped_column(Text, nullable=False)
-    # ...the spec's fields: Text for free text, nullable for optional args
+    issue: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="open")
 ```
 
 ### Migration
 
-`make migration m="add <things>"`, then **read and tidy** the file: rename it to the next number
-(`000N_<things>.py`, revision `"000N"`), match the style of `0001_initial_schema.py`, and add RLS in
-the same migration:
+`make migration m="add <things>"` generates `backend/alembic/versions/000N_add_<things>.py`,
+already numbered (revision `"000N"`, `down_revision` the previous one) and in the style of
+`0001_initial_schema.py`. **Read it**: remove the "auto generated" comments, check every column
+and constraint, and replace the RLS reminder at the end of `upgrade()` with:
 
 ```python
     op.execute("alter table public.<things> enable row level security")
@@ -60,7 +70,9 @@ class <Thing>(BaseModel):
     id: UUID
     conversation_id: UUID
     email: str
-    # ...the same fields as the row
+    issue: str
+    name: str | None  # optional columns: `| None`, no default (the row always has the attribute)
+    status: str
     created_at: datetime
 ```
 
@@ -77,12 +89,18 @@ class <Thing>Repository:
     def __init__(self, <things>: <Thing>DAO) -> None:
         self._<things> = <things>
 
-    def create(self, conversation_id: UUID, **fields: str | None) -> <Thing>:
-        row = self._<things>.insert(conversation_id=conversation_id, **fields)
+    def create(
+        self, conversation_id: UUID, *, email: str, issue: str, name: str | None = None
+    ) -> <Thing>:
+        row = self._<things>.insert(
+            conversation_id=conversation_id, email=email, issue=issue, name=name
+        )
         return <Thing>.model_validate(row, from_attributes=True)
 ```
 
-Prefer explicit keyword arguments over `**fields` when there are few.
+Keep the signature `create(conversation_id, *, <one keyword per column>)`: the tool calls it with
+keywords, and the evaluator's `RecordingRepository.create(conversation_id, **fields)` stands in for
+it.
 
 ## Tool: `backend/app/tools/<area>/<tool_name>.py`
 
@@ -99,14 +117,14 @@ from app.tools.builder import ToolBuilder
 
 class <ToolName>Args(BaseModel):
     email: EmailStr = Field(description="User's email, asked for explicitly")
-    question: str = Field(description="<what to store>, in the user's words")
+    issue: str = Field(description="<what to store>, in the user's words")
     name: str | None = Field(default=None, description="User's name if they gave it")
 
 
 def build_<tool_name>_tool(<things>: <Thing>Repository) -> BaseTool:
-    def run(email: str, question: str, config: RunnableConfig, name: str | None = None) -> str:
+    def run(email: str, issue: str, config: RunnableConfig, name: str | None = None) -> str:
         conversation_id = UUID(config["configurable"]["conversation_id"])
-        <things>.create(conversation_id, email=email, question=question, name=name)
+        <things>.create(conversation_id, email=email, issue=issue, name=name)
         return "<CODE>: <what happens next, for the agent to tell the user>."
 
     return (
@@ -128,8 +146,10 @@ the model, which asks again.
 
 - `app/tools/registry.py`: add `<things>: <Thing>Repository` to `ToolDeps` and the tool to
   `build_<agent>_tools`.
-- `app/api/deps.py` `get_tool_deps`: `<Thing>Repository(<Thing>DAO(get_sessions()))`.
-- `app/evals/agent_run.py` `eval_tool_deps`: `RecordingRepository()` in its place, so evaluations
+- `app/api/deps.py` `get_tool_deps`: add
+  `<things>=<Thing>Repository(<Thing>DAO(get_sessions()))` to the `ToolDeps(...)` call (keyword
+  arguments: keep the dependencies other tools already pass).
+- `app/evals/agent_run.py` `eval_tool_deps`: `<things>=RecordingRepository()`, so evaluations
   never write to Postgres.
 
 ## Tests: `backend/tests/test_<area>_tools.py`
@@ -151,7 +171,7 @@ class Fake<Thing>s:
         self.created.append({"conversation_id": conversation_id, **fields})
 
 
-ARGS = {"email": "ana@example.com", "question": "<a realistic request>"}
+ARGS = {"email": "ana@example.com", "issue": "<a realistic request>"}
 
 
 def _config(conversation_id) -> dict:
@@ -174,9 +194,15 @@ def test_rejects_a_bad_email():
 
 ## Prompt, evals, docs
 
-- Prompt: when to call it, which details to ask for first, what to tell the user afterwards.
-- Eval cases: `category: "action"` or `"escalation"`, `expected_behavior: "act"` or `"escalate"`,
-  `expected_tools: ["<tool_name>"]`, with all the details in the question; and one case where a
-  detail is missing (the agent must ask, `expected_tools: []`).
-- Docs: the table in `docs/database.md` (Schema), and in `docs/conventions.md` (Secrets and PII)
-  that this table holds personal data. Never log the args.
+- Prompt: a bullet in "How you answer" saying when to call it, which details to ask for first
+  (never guess them), and what to tell the user afterwards (from the tool's result). Several lines
+  are fine. Point other failure paths at it if they should end here (e.g. the knowledge tool's
+  `NO_RESULTS`).
+- Eval cases (`scenario`: the `plan.md` scenario, or `null`):
+  - all the details in the question: `category: "action"` (or `"escalation"`),
+    `expected_behavior: "act"`, `expected_tools: ["<tool_name>"]`;
+  - a detail missing: `expected_behavior: "clarify"`, `expected_tools: []`,
+    `forbidden_tools: ["<tool_name>"]` (the agent must ask before storing anything);
+  - its failure code, if it has one besides validation.
+- Docs: the table in `docs/database.md` (Schema), in `docs/conventions.md` (Secrets and PII) that
+  this table holds personal data, the tool's row in `plan.md`. Never log the args.

@@ -85,7 +85,7 @@ passed = every check passes and judge accuracy >= 4 and behaviour >= 4
 ## Dataset
 
 `dataset.jsonl`, one case per line; categories and fields are in
-[`docs/evaluation.md`](../../../docs/evaluation.md#dataset). The template ships 5 cases that need no
+[`docs/evaluation.md`](../../../docs/evaluation.md#dataset). A new project starts from 5 cases that need no
 tools; replace them with the project's own (`/kickoff` drafts them from `plan.md`).
 
 To add a case: next id in its category, keywords copied from the documents in `expected_sources`,

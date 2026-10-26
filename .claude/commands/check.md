@@ -7,7 +7,8 @@ continuing). Everything runs in Docker (see CLAUDE.md > Commands); never on the 
 1. `docker compose build api` (picks up dependency or Dockerfile changes)
 2. `docker compose run --rm --no-deps api sh -c "ruff check . && ruff format --check ."`
 3. `docker compose run --rm --no-deps api pytest -q`
-4. `docker compose run --rm api alembic check` (local `db` service: detects models that changed
+4. `docker compose run --rm api sh -c "alembic upgrade head && alembic check"` (local `db` service:
+   migrates it, then detects models that changed
    without a migration). If `.env` points `DATABASE_URL` at Supabase and it is unreachable, run
    `docker compose run --rm --no-deps api alembic upgrade head --sql > /dev/null` instead.
 5. `docker compose run --rm --no-deps web sh -c "npm install && npm run build"`

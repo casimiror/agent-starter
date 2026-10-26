@@ -18,6 +18,7 @@ they could be.
 - `block`: a guardrail should have replaced the reply with a safe message.
 - `escalate`: say it doesn't have the information or can't handle it, and offer a person.
 - `act`: call the tool that performs the action (see expected tools) and confirm the outcome.
+- `clarify`: a detail the action needs is missing, so ask for it; calling the tool now is wrong.
 
 ## Scores (1 = very poor, 5 = ideal)
 - **accuracy**: facts match the reference answer and the context. Any wrong or invented fact

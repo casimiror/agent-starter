@@ -13,6 +13,7 @@ export interface EvalCase {
   reference_answer: string;
   expected_behavior: string;
   expected_tools: string[];
+  forbidden_tools?: string[];
   forbidden: string[];
 }
 

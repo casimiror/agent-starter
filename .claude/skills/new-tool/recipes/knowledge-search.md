@@ -20,7 +20,9 @@ The tool must be named `search_knowledge` (`KNOWLEDGE_TOOL`) and render results 
 ```
 
 Rules for the content (also in `docs/knowledge-base.md`):
-- Each `## ` section is one chunk: self-contained, about 100-250 words.
+- Each `## ` section is one chunk: self-contained, at most about 250 words. Short is fine when
+  the facts are short: never pad a section with details that are not in the sources (the agent
+  repeats them as facts).
 - Put the words users search with in the heading (titles weigh 3x).
 - No raw URLs and no `$` amounts if those guardrails are on: the whole reply would be replaced.
   Links come from `ALLOWED_LINKS` through tools.
@@ -161,12 +163,33 @@ def build_search_knowledge_tool(kb: KnowledgeBase) -> BaseTool:
 
 ## Wiring
 
-- `app/tools/registry.py`: add `kb: KnowledgeBase` to `ToolDeps`, add
-  `build_search_knowledge_tool(deps.kb)` to `build_<agent>_tools`, and make `build_retriever`
-  return `deps.kb` (this turns on the RAG evaluation).
-- `app/api/deps.py` `get_tool_deps`: `ToolDeps(get_settings(), KnowledgeBase())`.
-- `app/evals/agent_run.py` `eval_tool_deps`: `ToolDeps(settings, KnowledgeBase())` (read-only,
-  no stand-in needed).
+`app/tools/registry.py` (keep what other tools already added):
+
+```python
+from app.tools.knowledge.kb import KnowledgeBase
+from app.tools.knowledge.search_knowledge import build_search_knowledge_tool
+
+
+@dataclass(frozen=True, kw_only=True)
+class ToolDeps:
+    settings: Settings
+    kb: KnowledgeBase
+
+
+def build_assistant_tools(deps: ToolDeps) -> list[BaseTool]:
+    return [build_search_knowledge_tool(deps.kb)]
+
+
+def build_retriever(deps: ToolDeps) -> Retriever | None:
+    """The knowledge tool's search: turns on the RAG evaluation."""
+    return deps.kb
+```
+
+`ToolDeps` is keyword-only, so its callers name each dependency:
+
+- `app/api/deps.py` `get_tool_deps`: `ToolDeps(settings=get_settings(), kb=KnowledgeBase())`.
+- `app/evals/agent_run.py` `eval_tool_deps`: `ToolDeps(settings=settings, kb=KnowledgeBase())`
+  (read-only, no stand-in needed).
 
 ## Tests: `backend/tests/test_knowledge.py`
 
@@ -175,7 +198,7 @@ import re
 
 import pytest
 
-from app.guardrails.output import AllowedLinksGuardrail
+from app.guardrails.output import AllowedLinksGuardrail, NoInventedPricesGuardrail
 from app.tools.knowledge.kb import KNOWLEDGE_DIR, KnowledgeBase
 from app.tools.knowledge.search_knowledge import build_search_knowledge_tool
 
@@ -213,14 +236,15 @@ def test_no_results_code(kb):
 
 
 def test_knowledge_passes_output_guardrails():
-    # The agent quotes the knowledge verbatim; a raw URL would get the whole reply replaced.
+    # The agent quotes the knowledge verbatim; a raw URL or a "$ 5" would get the reply replaced.
     for path in KNOWLEDGE_DIR.glob("*.md"):
         text = re.sub(r"<!--.*?-->", "", path.read_text(), flags=re.DOTALL)
         assert AllowedLinksGuardrail([]).check(text).allowed, path.name
+        assert NoInventedPricesGuardrail().check(text).allowed, path.name
 ```
 
 One `test_scenario_queries_hit_the_right_document` row per `plan.md` scenario the knowledge
-answers. Add `NoInventedPricesGuardrail` to the last test if that guardrail is wired.
+answers (or per section, if `plan.md` has no scenarios yet).
 
 ## Prompt, evals, docs
 
@@ -229,8 +253,12 @@ answers. Add `NoInventedPricesGuardrail` to the last test if that guardrail is w
   the escalation path>."
 - Eval cases: the course categories (`direct_fact`, `temporal`, `spanning`, `comparative`,
   `numerical`, `relationship`, `holistic`) with `keywords` copied from the files in
-  `expected_sources` and `expected_tools: ["search_knowledge"]`. `tests/test_eval_dataset.py`
-  checks every keyword is retrievable from its sources.
+  `expected_sources` and `expected_tools: ["search_knowledge"]`. Copy keywords character for
+  character (punctuation included: "3-5 business days"); `tests/test_eval_dataset.py` only folds
+  case and whitespace. Add one `escalation` case for the NO_RESULTS path (a question the
+  knowledge doesn't cover, no keywords, `expected_behavior: "escalate"`,
+  `expected_tools: ["search_knowledge"]`).
+- `plan.md`: the tool's row in "Agents and tools".
 - Docs: create `docs/knowledge-base.md` (sources of each file, the writing rules above, how
   retrieval works, the tests), add it to `CLAUDE.md` (Where to look) and `docs/README.md`, and add
   `.claude/rules/knowledge.md`:

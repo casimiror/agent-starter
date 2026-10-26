@@ -70,7 +70,7 @@ Graph diagram and how to modify or create agents: [`backend/app/agents/README.md
 
 ## Tools
 
-The template's agent has **no tools**: each project adds its own with `/new-tool`, which builds
+Each project adds its own tools with `/new-tool`, which builds
 each one from a recipe in `.claude/skills/new-tool/recipes/` (`knowledge-search`, `db-write`,
 `config-link`, `http-api`, `custom`); `/kickoff` decides the tools per agent with you. A tool is one
 file in `app/tools/<area>/`, `build_<name>_tool(deps) -> BaseTool` built with `ToolBuilder`, and is

@@ -54,7 +54,7 @@ On the deployed app the router is not mounted and the page says evaluation is of
 
 ## Dataset
 
-`backend/app/evals/dataset.jsonl`, one case per line. The template ships 5 cases that need no tools
+`backend/app/evals/dataset.jsonl`, one case per line. A new project starts from 5 cases that need no tools
 (scope, prompt injection, invented link, two off-topic); `/kickoff` writes the project's dataset
 from the scenarios in `plan.md`. Categories (`app/evals/dataset.py`):
 
@@ -75,8 +75,9 @@ from the scenarios in `plan.md`. Categories (`app/evals/dataset.py`):
 
 Each case: `question`, `keywords` (must appear in what is retrieved; only with a knowledge tool),
 `expected_sources` (knowledge documents), `reference_answer`, `expected_behavior` (`answer`,
-`decline`, `block`, `escalate`, `act`), `expected_tools`, `forbidden` substrings, `language`, and
-the `plan.md` `scenario` it covers. `tests/test_eval_dataset.py` checks that ids are unique, that
+`decline`, `block`, `escalate`, `act`, or `clarify` when a detail is missing and the agent must ask
+for it), `expected_tools`, `forbidden_tools` (must not be called, e.g. a write tool in a `clarify`
+case), `forbidden` substrings, `language`, and the `plan.md` `scenario` it covers (`null` if none). `tests/test_eval_dataset.py` checks that ids are unique, that
 every expected tool exists, and that every keyword is retrievable from its expected sources.
 
 ## RAG evaluation
@@ -99,6 +100,7 @@ runs it, and each keyword is looked for in the results:
    which tests whether the agent searches well. Compare it with the RAG evaluation to tell an index
    problem from a query problem.
 3. **Deterministic checks**: no error; blocked when it should be (and not when it should answer);
+   forbidden tools not called;
    expected tools called; no forbidden substring in the reply.
 4. **Judge** (`EVAL_JUDGE_MODEL`, default `google/gemini-3.8-flash`, temperature 0): rubric in
    `app/evals/prompts/judge.md`, scores 1-5 for accuracy, completeness and relevance (from the

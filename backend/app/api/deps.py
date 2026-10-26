@@ -31,7 +31,7 @@ def get_sessions() -> sessionmaker[Session]:
 @lru_cache
 def get_tool_deps() -> ToolDeps:
     """Repositories and clients the tools need; add them here when a tool needs one."""
-    return ToolDeps(get_settings())
+    return ToolDeps(settings=get_settings())
 
 
 @lru_cache

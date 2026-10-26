@@ -16,7 +16,9 @@ services:
       POSTGRES_PASSWORD: app_local_pw
       POSTGRES_DB: app
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Random free host port unless POSTGRES_PORT is set, so several projects from this template
+      # can run side by side (`make db-port` prints it). Bound to localhost only.
+      - "127.0.0.1:${POSTGRES_PORT:-}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

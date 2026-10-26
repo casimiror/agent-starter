@@ -19,9 +19,10 @@ conversation delete.
 
 ## Migrations
 
-- Change `models.py`, then `make migration m="..."`, then **read and tidy** the generated file:
-  rename it to the next number (`0002_<what>.py`, revision id `"0002"`) and match the style of
-  the existing revisions.
+- Change `models.py`, then `make migration m="..."`: it writes `backend/alembic/versions/
+  000N_<slug>.py` with revision `"000N"` (the next number) in the style of `0001`
+  (`alembic/script.py.mako`), formatted. **Read it**: drop the "auto generated" comments, check
+  each column and constraint, and replace the RLS reminder with the real statement for a new table.
 - Never edit an applied revision; add a new one.
 - **Every new table in `public` gets `alter table ... enable row level security`** in the same
   migration. Supabase exposes `public` over REST; RLS with no policies means only the backend (the

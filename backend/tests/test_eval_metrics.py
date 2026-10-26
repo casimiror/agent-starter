@@ -73,3 +73,10 @@ def test_checks_block_tools_and_forbidden():
 def test_answer_replaced_by_guardrail_fails():
     checks = run_checks(_case(), _run(blocked_by="price in output"))
     assert {c.name: c.passed for c in checks}["not_blocked"] is False
+
+
+def test_clarify_case_fails_when_the_tool_runs_before_asking():
+    case = _case(expected_behavior="clarify", forbidden_tools=["send_request"])
+    early = run_checks(case, _run(tool_calls=[ToolCall(name="send_request", args={})]))
+    assert {c.name: c.passed for c in early}["not_called:send_request"] is False
+    assert all(c.passed for c in run_checks(case, _run(reply="What is your email?")))

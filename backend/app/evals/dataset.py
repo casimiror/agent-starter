@@ -22,7 +22,7 @@ Category = Literal[
     "escalation",
     "action",
 ]
-Behavior = Literal["answer", "block", "decline", "escalate", "act"]
+Behavior = Literal["answer", "block", "decline", "escalate", "act", "clarify"]
 
 
 class EvalCase(BaseModel):
@@ -40,6 +40,9 @@ class EvalCase(BaseModel):
     reference_answer: str = Field(description="What a good reply says or does, for the judge")
     expected_behavior: Behavior
     expected_tools: list[str] = Field(description="Tools the agent must call")
+    forbidden_tools: list[str] = Field(
+        default=[], description="Tools the agent must not call, e.g. before it has every detail"
+    )
     forbidden: list[str] = Field(description="Substrings that must not appear in the reply")
 
 

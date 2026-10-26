@@ -38,7 +38,7 @@ Where the pieces come from:
 | --- | --- | --- |
 | System prompt | `prompts/assistant.md` | Markdown, never inline strings; the template's is a placeholder |
 | LLM | `app/core/llm.py` (`build_chat_model`) | provider and model from `Settings` (`LLM_PROVIDER`, `LLM_MODEL`) |
-| Tools | `app/tools/<area>/<tool>.py`, registered in `app/tools/registry.py` | each built with `ToolBuilder`; none in the template |
+| Tools | `app/tools/<area>/<tool>.py`, registered in `app/tools/registry.py` | each built with `ToolBuilder` from a recipe (`/new-tool`) |
 | Guardrails | `app/guardrails/input.py`, `output.py` | pure checks, unit-tested |
 | Wiring | `app/api/deps.py` (`get_chat_service`) | the only place concrete classes meet |
 | Invocation | `app/services/chat_service.py` | loads history from `messages`, traces the turn, persists the reply |
