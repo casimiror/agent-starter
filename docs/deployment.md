@@ -80,17 +80,33 @@ A repo created from the template copies files, not settings. Until this is done,
    | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` | `openrouter`, `google/gemini-3.5-flash-lite`, your key |
    | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` | your project's keys and region URL |
    | `APP_NAME`, `ALLOWED_LINKS` | the app name and the URL prefixes the agent may write (JSON list) |
+   | `LLM_FALLBACKS` (+ another provider's key) | optional: models to try when the primary fails |
+   | `RATE_LIMIT_STORAGE_URI` | optional: a Redis URL (Upstash `rediss://...`) for a global rate limit |
+   | `LOG_FORMAT` | `json` (the default; Vercel shows each line's fields) |
 
    The limits have working defaults. Never set `EVAL_ENABLED` on Vercel.
 4. **Settings → Functions → Region**: the same region as Supabase.
 5. Deploy, then check `https://<app>.vercel.app/api/health` and send a chat message.
 
+## Preview deployments
+
+Every PR gets a preview deployment, and Vercel gives it the **Preview** environment variables. If
+Preview has the production `DATABASE_URL`, previews write to the production database. Give Preview
+its own database: a second Supabase project (or a Supabase branch) whose transaction pooler URL is
+set as `DATABASE_URL` for **Preview** only, migrated with `make migrate-supabase` against its
+session pooler URL. Previews' traces are already apart in Langfuse (environment `preview`).
+
 ## Known limits on Vercel
 
-- **Rate limit is per function instance** (slowapi in-memory storage); the client IP comes from
-  Vercel's `x-real-ip`. For a global limit, point slowapi at Redis (e.g. Upstash).
+- **Rate limit is per function instance** unless `RATE_LIMIT_STORAGE_URI` points at Redis (e.g.
+  Upstash); the client IP comes from Vercel's `x-real-ip`.
+- **Function duration**: `maxDuration` is 60 s (`backend/vercel.json`). The worst case of one LLM
+  call is `LLM_TIMEOUT x (LLM_MAX_RETRIES + 1)` per model tried, and a turn with tools makes
+  several calls: keep the defaults (25 s, 1 retry) or raise `maxDuration` on a plan that allows it.
 - **Langfuse** traces are flushed after every response (`BackgroundTasks`), since an instance can
   freeze between requests.
+- **Logs**: Vercel → Project → Logs shows the JSON lines; filter by `request_id` (the `x-request-id`
+  response header) to follow one request.
 
 ## Verify a deploy
 

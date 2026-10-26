@@ -14,6 +14,6 @@ def client_ip(request: Request) -> str:
     return get_remote_address(request)
 
 
-# Per-IP limits protect the shared LLM API key. In-memory storage: on Vercel each function
-# instance counts separately, so the limit is per instance (see README > Deploy).
-limiter = Limiter(key_func=client_ip)
+# Per-IP limits protect the shared LLM API key. With the default memory:// storage each Vercel
+# instance counts separately; RATE_LIMIT_STORAGE_URI (Redis) makes the limit global.
+limiter = Limiter(key_func=client_ip, storage_uri=get_settings().rate_limit_storage_uri)

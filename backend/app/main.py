@@ -4,9 +4,11 @@ from fastapi import FastAPI
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.api.middleware import access_log
 from app.api.routes import chat, feedback, health
 from app.core import observability
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 from app.core.rate_limit import limiter
 
 
@@ -19,7 +21,9 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_logging(settings)
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.middleware("http")(access_log)
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

@@ -51,3 +51,23 @@ def test_tool_builder_requires_description():
 def test_tool_builder_builds_tool():
     tool = ToolBuilder("ping").describe("Ping").handler(lambda: "pong").build()
     assert tool.name == "ping" and tool.invoke({}) == "pong"
+
+
+class _DownModel(GenericFakeChatModel):
+    """A provider that is down: every call raises, as after the client's own retries."""
+
+    def _generate(self, *args, **kwargs):
+        raise TimeoutError("provider down")
+
+
+def test_fallback_model_answers_when_the_primary_fails():
+    primary = _DownModel(messages=iter([]))
+    fallback = GenericFakeChatModel(messages=iter([AIMessage("from the fallback")]))
+    graph = (
+        AgentBuilder("test")
+        .with_llm(primary)
+        .with_fallbacks([fallback])
+        .with_prompt_file("assistant.md")
+        .build()
+    )
+    assert _run(graph, "hi")["messages"][-1].text == "from the fallback"

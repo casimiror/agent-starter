@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from app.agents.assistant_agent import build_assistant_agent
 from app.core.config import Settings
-from app.core.llm import build_chat_model
+from app.core.llm import build_chat_models
 from app.domain.retrieval import KNOWLEDGE_TOOL, RetrievedDoc, parse_docs
 from app.tools.registry import ToolDeps, build_assistant_tools
 
@@ -59,7 +59,7 @@ def eval_tool_deps(settings: Settings) -> ToolDeps:
 
 def build_eval_agent(settings: Settings) -> CompiledStateGraph:
     tools = build_assistant_tools(eval_tool_deps(settings))
-    return build_assistant_agent(build_chat_model(settings), tools, settings)
+    return build_assistant_agent(build_chat_models(settings), tools, settings)
 
 
 def run_agent(

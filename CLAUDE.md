@@ -63,6 +63,8 @@ make eval        # evaluate the real agent (LLM calls): local only, never in CI
 - Schema changes only via `app/db/models.py` + a new Alembic revision; never edit an applied one.
   Every new `public` table gets RLS enabled in its migration.
 - Conversation history lives in the `messages` table, not a LangGraph checkpointer.
+- Log with `logging.getLogger("app.<area>")` and fields in `extra` (`docs/architecture/backend.md`
+  > Logging); never user text, replies or tool arguments.
 - Secrets only via env (`.env`, Vercel). No PII in logs or Langfuse (`visitor_id` is an anonymous
   UUID). Keep `/api/chat` behind the rate limiter and the input length guardrail.
 - Never call a real LLM in tests.
