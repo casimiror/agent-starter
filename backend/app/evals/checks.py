@@ -6,7 +6,7 @@ from app.evals.agent_run import AgentRun
 from app.evals.dataset import EvalCase
 
 # Behaviours where a guardrail replacing the reply means the bot failed to answer.
-_MUST_ANSWER = {"answer", "act"}
+_MUST_ANSWER = {"answer", "act", "clarify"}
 
 
 class Check(BaseModel):
@@ -30,6 +30,14 @@ def run_checks(case: EvalCase, run: AgentRun) -> list[Check]:
             Check(
                 name=f"called:{tool}",
                 passed=tool in run.tools_called,
+                detail=", ".join(run.tools_called) or "no tools called",
+            )
+        )
+    for tool in case.forbidden_tools:
+        checks.append(
+            Check(
+                name=f"not_called:{tool}",
+                passed=tool not in run.tools_called,
                 detail=", ".join(run.tools_called) or "no tools called",
             )
         )
