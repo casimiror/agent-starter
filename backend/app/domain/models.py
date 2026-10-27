@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 Role = Literal["user", "assistant"]
 Rating = Literal["up", "down"]
+Channel = Literal["web", "whatsapp", "voice"]
 
 
 class Message(BaseModel):
@@ -19,6 +20,7 @@ class Message(BaseModel):
 class Conversation(BaseModel):
     id: UUID
     visitor_id: UUID | None
+    channel: Channel = "web"
     created_at: datetime
 
 

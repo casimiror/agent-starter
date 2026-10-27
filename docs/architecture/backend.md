@@ -48,14 +48,20 @@ Vercel instances). Every `/api/*` response carries an `x-request-id` header (see
 
 `/api/evals/*` exists only with `EVAL_ENABLED=true` (local): see `docs/evaluation.md`.
 
+`/api/chat` is the web channel and is always mounted. The routers of other channels (WhatsApp,
+voice) are mounted only when `CHANNELS` enables them, through the registry in
+`app/api/routes/channels/__init__.py`: see `docs/channels.md`.
+
 ## A chat turn
 
 1. `POST /api/chat` (`routes/chat.py`): slowapi limits per client IP, `ChatRequest` validates
    (`message`, optional `conversation_id`, optional `visitor_id` UUID).
-2. `ChatService.handle_turn` gets or creates the conversation (storing `visitor_id`), loads the last
-   `MAX_HISTORY_MESSAGES` from `messages` (the source of truth, no LangGraph checkpointer).
+2. `ChatService.handle_turn` gets or creates the conversation (storing `visitor_id` and `channel`,
+   `web` unless a channel passes its own), loads the last `MAX_HISTORY_MESSAGES` from `messages`
+   (the source of truth, no LangGraph checkpointer).
 3. `observability.trace_turn` opens one Langfuse trace: root span + `propagate_attributes`
-   (`session_id = conversation_id`, `user_id = visitor_id`).
+   (`session_id = conversation_id`, `user_id = visitor_id`, tag `channel:<name>`). The channel is
+   never passed to the graph: the agent behaves the same on every channel.
 4. The graph runs: `input_guard -> agent <-> tools -> output_guard`.
    - Input guardrails: max length, prompt-injection heuristics. Blocked -> canned reply, no LLM call.
    - Agent: LLM with tools bound; loops through `ToolNode` until it answers. A failing model falls
@@ -67,6 +73,14 @@ Vercel instances). Every `/api/*` response carries an `x-request-id` header (see
 6. The route schedules `observability.flush` as a background task (serverless instances can freeze).
 
 Graph diagram and how to modify or create agents: [`backend/app/agents/README.md`](../../backend/app/agents/README.md).
+
+## Channels
+
+`ChannelConversations` (`app/services/channel_conversations.py`) is the part every non-web channel
+shares: an anonymous keyed-hash `visitor_id` per sender, the conversation to continue (latest on
+the channel while inside `CONVERSATION_WINDOW_HOURS`) and a per-visitor lock. `hit_sender` in
+`app/core/rate_limit.py` limits per sender on the limiter's storage. Both are wired or used by the
+channel routers; details and the PII rule in `docs/channels.md`.
 
 ## Tools
 
@@ -112,7 +126,9 @@ the vote is removed. Only assistant messages are rateable (`MessageNotRateableEr
 `app/core/config.py` (`Settings`, pydantic-settings). Everything comes from env; `.env.example`
 documents each variable. Notable aliases: `DATABASE_URL` falls back to `POSTGRES_URL` (Vercel's
 Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` sets `serverless`.
-`APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
+`CHANNELS`, `CHANNEL_ID_SECRET`, `PUBLIC_BASE_URL` and `CONVERSATION_WINDOW_HOURS` configure the
+channels beyond the web UI; `create_app` fails at startup on an unknown channel or a missing
+secret/base URL (`docs/channels.md`). `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
 
 ## Resilience

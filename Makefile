@@ -6,7 +6,7 @@ API := $(COMPOSE) run --rm api
 API_NODB := $(COMPOSE) run --rm --no-deps api
 
 .PHONY: help env up dev down reset-db logs test lint format migrate migration migrate-check \
-	migrate-roundtrip migrate-sql migrate-supabase ui-build db-port psql check ci eval lock
+	migrate-roundtrip migrate-sql migrate-supabase ui-build db-port psql check ci eval lock tunnel
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -21,11 +21,16 @@ up: ## Prod-like: db + migrations + app on :8000
 dev: ## Dev: db, api with reload (:8001), vite (:5173)
 	$(COMPOSE) up --build api web
 
+tunnel: ## Dev + public ngrok URL for channel webhooks (NGROK_* in .env, docs/channels.md)
+	@grep -q '^NGROK_AUTHTOKEN=.' .env && grep -q '^NGROK_DOMAIN=.' .env || \
+		{ echo "set NGROK_AUTHTOKEN and NGROK_DOMAIN in .env (docs/channels.md)"; exit 1; }
+	$(COMPOSE) --profile dev --profile tunnel up --build api web ngrok
+
 down: ## Stop all containers
-	$(COMPOSE) --profile dev down
+	$(COMPOSE) --profile dev --profile tunnel down
 
 reset-db: ## Stop everything and wipe the local Postgres volume
-	$(COMPOSE) --profile dev down -v
+	$(COMPOSE) --profile dev --profile tunnel down -v
 
 logs: ## Follow logs (make logs s=app)
 	$(COMPOSE) logs -f $(s)

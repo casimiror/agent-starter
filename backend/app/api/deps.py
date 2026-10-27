@@ -1,5 +1,6 @@
 """The only place where concrete classes are wired together."""
 
+from datetime import timedelta
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from app.db.daos.message_feedback_dao import MessageFeedbackDAO
 from app.db.session import build_session_factory
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.feedback_repository import FeedbackRepository
+from app.services.channel_conversations import ChannelConversations
 from app.services.chat_service import ChatService
 from app.services.feedback_service import FeedbackService
 from app.tools.registry import ToolDeps, build_assistant_tools
@@ -43,6 +45,17 @@ def get_chat_service() -> ChatService:
     tools = build_assistant_tools(get_tool_deps())
     agent = build_assistant_agent(build_chat_models(settings), tools, settings)
     return ChatService(conversations, agent, settings.max_history_messages, settings.llm_model)
+
+
+@lru_cache
+def get_channel_conversations() -> ChannelConversations:
+    """Shared by every non-web channel router (docs/channels.md). One instance per process, so
+    the per-visitor locks are shared."""
+    settings = get_settings()
+    sessions = get_sessions()
+    conversations = ConversationRepository(ConversationDAO(sessions), MessageDAO(sessions))
+    window = timedelta(hours=settings.conversation_window_hours)
+    return ChannelConversations(conversations, settings.channel_id_secret, window)
 
 
 @lru_cache
