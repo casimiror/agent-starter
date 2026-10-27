@@ -9,6 +9,11 @@ configuration.
 Status: the shared foundation, the WhatsApp channel and the voice channel (relay, gather and
 realtime modes) are in place.
 
+In a project created from the template, `/new-channel` does the setup below for you: it asks which
+channels and which voice mode, writes the settings, fills the Channels section of `plan.md` and
+guides the Twilio and ngrok test. `/kickoff` runs it, and `/deploy-setup` checks the channels
+against the production host.
+
 ## Enabling a channel
 
 ```bash

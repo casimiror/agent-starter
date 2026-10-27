@@ -58,8 +58,11 @@ evaluation). Project plan: [plan.md](plan.md) (a template to fill).
    leaves open (scenarios, agents, the tools each agent needs), writes `plan.md` and **waits for
    your approval**, then builds the project in one PR per step: identity and prompt, each tool from
    its recipe, the evaluation dataset.
-4. `/deploy-setup`: GitHub environment, Supabase, Vercel and Langfuse. It runs the safe steps and
-   tells you the ones that need your accounts or secrets.
+4. Want WhatsApp or phone calls too? `/kickoff` asks, and `/new-channel` turns them on: which
+   voice mode (ConversationRelay, speech-to-speech realtime or basic Gather), the settings, and a
+   guided Twilio + ngrok test. Channels are off by default; see [docs/channels.md](docs/channels.md).
+5. `/deploy-setup`: GitHub environment, Supabase, Vercel, channels and Langfuse. It runs the safe
+   steps and tells you the ones that need your accounts or secrets.
 
 ### Claude Code skills and subagents
 
@@ -68,7 +71,8 @@ evaluation). Project plan: [plan.md](plan.md) (a template to fill).
 | `/kickoff <brief>` | brief → interview → `plan.md` (approved by you) → one PR per step |
 | `/new-tool <name> <what it does>` | a tool from a recipe: `knowledge-search` (documents + BM25, turns on the RAG evaluation), `db-write` (a table + repository), `config-link` (data from settings), `http-api` (an external API through a client), `custom` |
 | `/new-agent <name> <job>` | another agent built with `AgentBuilder` |
-| `/deploy-setup` | production: GitHub environment, Supabase, Vercel, Langfuse online judge |
+| `/new-channel [channels]` | WhatsApp and/or voice: asks which and which voice mode, sets `CHANNELS` and the voice settings, fills `plan.md`, guides the Twilio + ngrok test |
+| `/deploy-setup` | production: GitHub environment, Supabase, Vercel, channels (host and Twilio webhooks), Langfuse online judge |
 | `/check` | lint, tests, migrations and UI build, then the `verifier` review |
 | `tool-builder` (subagent) | implements one tool from its spec and recipe |
 | `verifier` (subagent) | reviews a diff for layering, guardrail, data and PII mistakes |
