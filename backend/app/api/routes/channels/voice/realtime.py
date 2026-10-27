@@ -1,6 +1,6 @@
 """Voice, `VOICE_MODE=realtime`: Twilio Media Streams connects here with the call's audio and a
 speech-to-speech model answers it. WebSocket only; the call itself is `RealtimeSession`
-(services/voice_realtime.py).
+(services/channels/voice/realtime/session.py).
 
 The app must run on a host that keeps WebSockets open for the whole call (a container or VM), not
 Vercel functions.
@@ -15,11 +15,11 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api.deps import get_realtime_connector, get_realtime_voice_service
 from app.api.routes.channels.twilio_security import handshake_valid
-from app.clients.realtime import RealtimeConnector
+from app.clients.openai_realtime import RealtimeConnector
 from app.core.config import Settings, get_settings
-from app.services import voice_twiml
-from app.services.realtime_voice_service import RealtimeVoiceService
-from app.services.voice_realtime import RealtimeSession
+from app.services.channels.voice import twiml as voice_twiml
+from app.services.channels.voice.realtime.service import RealtimeVoiceService
+from app.services.channels.voice.realtime.session import RealtimeSession
 
 log = logging.getLogger("app.voice")
 router = APIRouter(tags=["voice"])

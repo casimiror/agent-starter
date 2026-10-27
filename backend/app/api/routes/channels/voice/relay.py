@@ -1,6 +1,6 @@
 """Voice, `VOICE_MODE=relay` (Twilio ConversationRelay): Twilio does speech-to-text and
 text-to-speech and talks to this WebSocket in JSON text. WebSocket and HTTP only; the message
-handling is `RelaySession` (services/voice_relay.py).
+handling is `RelaySession` (services/channels/voice/relay.py).
 
 The app must run on a host that keeps WebSockets open (a container or VM), not Vercel functions.
 """
@@ -18,9 +18,9 @@ from app.api.deps import get_relay_clock, get_voice_service
 from app.api.routes.channels.twilio_security import handshake_valid, public_url, verified_form
 from app.api.routes.channels.voice.modes import only
 from app.core.config import Settings, get_settings
-from app.services import voice_twiml
-from app.services.voice_relay import RelaySession
-from app.services.voice_service import VoiceService
+from app.services.channels.voice import twiml as voice_twiml
+from app.services.channels.voice.relay import RelaySession
+from app.services.channels.voice.service import VoiceService
 
 log = logging.getLogger("app.voice")
 router = APIRouter(tags=["voice"])

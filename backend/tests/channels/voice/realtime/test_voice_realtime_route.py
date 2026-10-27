@@ -12,8 +12,13 @@ from twilio.request_validator import RequestValidator
 from app.api.deps import get_realtime_connector, get_realtime_voice_service
 from app.api.routes.channels import include_channel_routers
 from app.core.config import get_settings
-from tests.realtime_fakes import FakeConnector, make_lookup_tool, make_realtime_service, wait_until
-from tests.test_voice_realtime_session import (
+from tests.channels.voice.realtime.realtime_fakes import (
+    FakeConnector,
+    make_lookup_tool,
+    make_realtime_service,
+    wait_until,
+)
+from tests.channels.voice.realtime.test_voice_realtime_session import (
     BLOCKED_INPUT_REPLY,
     INJECTION,
     SPEECH_STARTED,
@@ -27,7 +32,7 @@ from tests.test_voice_realtime_session import (
     pcm,
     words_done,
 )
-from tests.voice_fakes import CALLER, TOKEN
+from tests.channels.voice.voice_fakes import CALLER, TOKEN
 
 WS_URL = "wss://bot.example.com/api/channels/voice/stream"
 PATH = "/api/channels/voice/stream"

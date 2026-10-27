@@ -14,7 +14,7 @@ from app.api.deps import get_whatsapp_dedupe, get_whatsapp_service
 from app.api.routes.channels.twilio_security import public_url, verified_form
 from app.core.config import Settings, get_settings
 from app.core.dedupe import RecentIds
-from app.services.whatsapp_service import WhatsAppService
+from app.services.channels.whatsapp.service import WhatsAppService
 
 log = logging.getLogger("app.whatsapp")
 router = APIRouter(tags=["whatsapp"])

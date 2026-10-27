@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT, assistant_guardrails, build_assistant_agent
 from app.agents.builder import load_prompt
-from app.clients.realtime import OpenAIRealtimeConnector
+from app.clients.openai_realtime import OpenAIRealtimeConnector
 from app.core.config import get_settings
 from app.core.dedupe import RecentIds
 from app.core.llm import build_chat_models
@@ -20,12 +20,12 @@ from app.db.daos.message_feedback_dao import MessageFeedbackDAO
 from app.db.session import build_session_factory
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.feedback_repository import FeedbackRepository
-from app.services.channel_conversations import ChannelConversations
+from app.services.channels.conversations import ChannelConversations
+from app.services.channels.voice.realtime.service import RealtimeVoiceService
+from app.services.channels.voice.service import VoiceService
+from app.services.channels.whatsapp.service import WhatsAppService
 from app.services.chat_service import ChatService
 from app.services.feedback_service import FeedbackService
-from app.services.realtime_voice_service import RealtimeVoiceService
-from app.services.voice_service import VoiceService
-from app.services.whatsapp_service import WhatsAppService
 from app.tools.registry import ToolDeps, build_assistant_tools
 
 if TYPE_CHECKING:

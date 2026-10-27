@@ -9,7 +9,15 @@ from twilio.request_validator import RequestValidator
 from app.api.deps import get_voice_service
 from app.api.routes.channels import include_channel_routers
 from app.core.config import get_settings
-from tests.voice_fakes import BASE, CALLER, CALLER_NAME, TOKEN, FakeChat, make_settings, make_voice
+from tests.channels.voice.voice_fakes import (
+    BASE,
+    CALLER,
+    CALLER_NAME,
+    TOKEN,
+    FakeChat,
+    make_settings,
+    make_voice,
+)
 
 URL = f"{BASE}/api/channels/voice/incoming"
 FORM = {
@@ -242,7 +250,7 @@ def test_voice_is_not_mounted_without_the_channel():
 
 def test_the_registry_has_a_builder_for_every_voice_mode():
     from app.core.config import Settings
-    from app.services.voice_twiml import INCOMING
+    from app.services.channels.voice.twiml import INCOMING
 
     modes = Settings.model_fields["voice_mode"].annotation.__args__
     assert set(INCOMING) == set(modes)

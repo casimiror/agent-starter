@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from app.services.voice_format import format_for_speech, truncate_speech
+from app.services.channels.voice.format import format_for_speech, truncate_speech
 
 PHRASE = "I can't read links aloud; check our website."
 

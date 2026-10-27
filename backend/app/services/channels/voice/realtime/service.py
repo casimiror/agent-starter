@@ -22,7 +22,7 @@ from app.core import observability
 from app.core.observability import trace_turn
 from app.guardrails.base import Guardrail, GuardrailResult, run_guardrails
 from app.repositories.conversation_repository import ConversationRepository
-from app.services.voice_service import VoiceCall, VoiceService
+from app.services.channels.voice.service import VoiceCall, VoiceService
 
 log = logging.getLogger("app.voice")
 
@@ -99,7 +99,7 @@ class RealtimeVoiceService:
                     "input": {
                         "format": dict(AUDIO_FORMAT),
                         # The server only detects turns. We create every response ourselves,
-                        # after the input guardrails ran on the transcript (voice_realtime.py);
+                        # after the input guardrails ran on the transcript (session.py);
                         # interrupt_response makes the server cancel a reply on barge-in (we
                         # still send `clear` and `truncate`). UNVERIFIED against a live session:
                         # the two field names, from the API reference as summarised.

@@ -42,10 +42,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from app.clients.realtime import RealtimeConnection, RealtimeConnector, RealtimeError
+from app.clients.openai_realtime import RealtimeConnection, RealtimeConnector, RealtimeError
 from app.guardrails.base import GuardrailResult
-from app.services.realtime_voice_service import RealtimeVoiceService
-from app.services.voice_service import VoiceCall
+from app.services.channels.voice.realtime.service import RealtimeVoiceService
+from app.services.channels.voice.service import VoiceCall
 
 log = logging.getLogger("app.voice")
 

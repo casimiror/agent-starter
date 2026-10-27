@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from app.services.voice_service import VoiceCall, VoiceService
+from app.services.channels.voice.service import VoiceCall, VoiceService
 
 log = logging.getLogger("app.voice")
 

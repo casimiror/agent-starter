@@ -8,8 +8,8 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.domain.models import Conversation
-from app.services.channel_conversations import ChannelConversations
-from app.services.voice_service import VoiceService
+from app.services.channels.conversations import ChannelConversations
+from app.services.channels.voice.service import VoiceService
 
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 TOKEN = "twilio-token"

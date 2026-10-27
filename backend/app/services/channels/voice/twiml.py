@@ -12,7 +12,7 @@ from uuid import UUID
 from twilio.twiml.voice_response import VoiceResponse
 
 from app.core.config import Settings
-from app.services.voice_format import truncate_speech
+from app.services.channels.voice.format import truncate_speech
 
 INCOMING_PATH = "/api/channels/voice/incoming"
 RELAY_WS_PATH = "/api/channels/voice/relay/ws"

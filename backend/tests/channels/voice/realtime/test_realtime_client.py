@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from websockets.asyncio.server import serve
 
-from app.clients.realtime import OpenAIRealtimeConnector, RealtimeError
+from app.clients.openai_realtime import OpenAIRealtimeConnector, RealtimeError
 
 
 def run_against_local_server(scenario):

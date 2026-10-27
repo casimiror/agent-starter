@@ -5,9 +5,9 @@ from typing import Protocol
 
 from app.core import observability
 from app.core.rate_limit import hit_sender
-from app.services.channel_conversations import ChannelConversations
+from app.services.channels.conversations import ChannelConversations
+from app.services.channels.whatsapp.format import MAX_MESSAGE_CHARS, format_for_whatsapp
 from app.services.chat_service import ChatService
-from app.services.whatsapp_format import MAX_MESSAGE_CHARS, format_for_whatsapp
 
 log = logging.getLogger("app.whatsapp")
 

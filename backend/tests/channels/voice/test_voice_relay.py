@@ -11,8 +11,15 @@ from twilio.request_validator import RequestValidator
 from app.api.deps import get_relay_clock, get_voice_service
 from app.api.routes.channels import include_channel_routers
 from app.core.config import get_settings
-from app.services.voice_service import APOLOGY
-from tests.voice_fakes import BASE, CALLER, TOKEN, FakeChat, make_settings, make_voice
+from app.services.channels.voice.service import APOLOGY
+from tests.channels.voice.voice_fakes import (
+    BASE,
+    CALLER,
+    TOKEN,
+    FakeChat,
+    make_settings,
+    make_voice,
+)
 
 WS_URL = "wss://bot.example.com/api/channels/voice/relay/ws"
 PATH = "/api/channels/voice/relay/ws"
