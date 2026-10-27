@@ -101,6 +101,8 @@ Unlike `/api/chat`, the HTTP response does not carry the reply: Twilio gives a w
    `hit_sender(RATE_LIMIT_WHATSAPP, "whatsapp", visitor_id)`, canned reply for media or empty
    text, then under `ChannelConversations.lock`: `resolve` and
    `ChatService.handle_turn(..., channel="whatsapp")`. A failing turn sends an apology.
+   Before `lock` is released the service takes `send_lock`, so one sender's replies go out in
+   order without holding up their next turn.
 3. The reply goes through `format_for_whatsapp` (links, bold, headings, split into at most three
    messages of 1600 characters; never alters a URL) and `WhatsAppSender.send` (Twilio REST API),
    from the number the user wrote to. `observability.flush` runs at the end.

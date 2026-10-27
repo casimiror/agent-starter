@@ -80,9 +80,7 @@ class WhatsAppService:
                 except Exception as exc:
                     # Only the exception type: its message and traceback can carry the user's text
                     # (SQLAlchemy errors print the statement parameters).
-                    log.error(
-                        "whatsapp turn failed", extra={**fields, "error": type(exc).__name__}
-                    )
+                    log.error("whatsapp turn failed", extra={**fields, "error": type(exc).__name__})
                     parts = [APOLOGY]
                 else:
                     parts = self._format(result.reply, fields)
