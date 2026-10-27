@@ -1,6 +1,6 @@
 ---
 name: kickoff
-description: Start a new agent project from this template - interview the user about the brief, write plan.md (scenarios, agents, tools per agent), wait for approval, then build it in one PR per step - project identity, each tool from its recipe, the eval dataset - and hand off to /deploy-setup. Use at the start of a project created from agent-starter.
+description: Start a new agent project from this template - interview the user about the brief, write plan.md (scenarios, agents, tools per agent), wait for approval, then build it in one PR per step - project identity, each tool from its recipe, the eval dataset, the channels (WhatsApp, voice) - and hand off to /deploy-setup. Use at the start of a project created from agent-starter.
 argument-hint: <brief text or path to the brief>
 ---
 # Kickoff
@@ -46,13 +46,17 @@ Only ask what the brief leaves open, with your recommended option first. Cover:
    (`NoInventedPricesGuardrail`), topics it must refuse, personal data it may collect.
 7. **Identity**: app name, language(s), tone, the links it may write, the model (default
    `google/gemini-3.5-flash-lite` on OpenRouter) and fallbacks.
+8. **Channels**: besides the web UI, does it need WhatsApp or phone calls? If calls, which kind of
+   voice (ConversationRelay, recommended; speech-to-speech realtime; basic Gather) and the voice
+   language. Ask the same questions as `/new-channel` step 1 and leave the details (hosting check,
+   settings, Twilio setup) to it; if the answer is web only, nothing more is needed.
 
 ## 3. Write plan.md and wait for approval
 
 Branch `docs/plan`. Fill every section of `plan.md` from the brief and the answers: Goal, Users
 and scenarios, Agents and tools (with the recipe per tool), Scope in/out with reasons, Model
-choice, Evaluation (categories per scenario), Phases, Risks, Open questions. No placeholder may
-remain.
+choice, Channels, Evaluation (categories per scenario), Phases, Risks, Open questions. No
+placeholder may remain (a web-only project says so in Channels).
 
 Show the user a short summary (scenarios, agents, tools with recipes, out of scope) and **stop:
 ask for approval or changes**. Do not write code before the plan is approved. Then commit, open the
@@ -103,8 +107,16 @@ agree, run `make eval args="--no-langfuse"` (or with Langfuse if configured), re
 and the failing cases with the judge's feedback, and propose fixes (prompt, knowledge, tool
 descriptions) as separate PRs. Never run it in CI.
 
-## 7. Deploy and hand off
+## 7. Channels (branch `feat/<channel>-channel-setup`)
+
+Skip if the project is web only. Otherwise run `/new-channel` for the channels chosen in step 2: it
+sets `CHANNELS` and the voice settings, completes the Channels section of `plan.md` and guides the
+local Twilio test. Do it before `/deploy-setup`, which checks the channels against the host. The
+agent and its prompt stay the same on every channel.
+
+## 8. Deploy and hand off
 
 Run `/deploy-setup`. Then report to the user: what was built (PRs merged), the scenarios and how
-each is covered, the eval result if run, what they still have to do themselves (secrets, Vercel,
-Langfuse), and the open questions from `plan.md`.
+each is covered, the eval result if run, the channels enabled and their pending Twilio steps, what
+they still have to do themselves (secrets, Vercel, Langfuse, Twilio), and the open questions from
+`plan.md`.
