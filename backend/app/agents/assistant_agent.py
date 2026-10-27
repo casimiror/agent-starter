@@ -8,7 +8,6 @@ from app.guardrails.base import Guardrail
 from app.guardrails.input import MaxLengthGuardrail, PromptInjectionGuardrail
 from app.guardrails.output import AllowedLinksGuardrail
 
-
 ASSISTANT_PROMPT = "assistant.md"
 
 
