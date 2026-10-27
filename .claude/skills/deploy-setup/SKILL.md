@@ -1,6 +1,6 @@
 ---
 name: deploy-setup
-description: Set up or check the production deploy of a project created from agent-starter - GitHub production environment, Supabase, Vercel, Langfuse and its online judge - doing the safe steps and guiding the user through the ones that need their secrets or accounts.
+description: Set up or check the production deploy of a project created from agent-starter - GitHub production environment, Supabase, Vercel, enabled channels (host and Twilio webhooks), Langfuse and its online judge - doing the safe steps and guiding the user through the ones that need their secrets or accounts.
 ---
 # Deploy setup
 
@@ -59,7 +59,40 @@ curl -s -X POST https://<project>.vercel.app/api/chat \
 The reply must match the prompt's scope, and the response must carry `x-request-id`. Put the
 production URL in `README.md` (Live) and `docs/deployment.md`.
 
-## 4. Langfuse (the user)
+## 4. Channels (only if `CHANNELS` or `plan.md` has WhatsApp or voice)
+
+Read `plan.md` (Channels) and `docs/channels.md` (Limits). Check the host against the modes:
+
+- Voice `relay` or `realtime` keeps WebSockets open for the whole call, and WhatsApp sends its
+  reply from a background task after answering the webhook. **Vercel functions do neither
+  reliably.** If the project deploys to Vercel, warn the user and offer: voice `gather` (plain
+  webhooks; still bound by Twilio's ~15 s per turn), or a container host (the Docker image on a
+  VM, Fly.io, Railway, Render...) for the app. Record the decision in `plan.md` (Channels) and
+  `docs/deployment.md`. Do not put a mode that cannot work into production.
+- Per-process state (deduplication, the per-visitor lock, `memory://` rate limits) is looser with
+  several instances; a Redis `RATE_LIMIT_STORAGE_URI` makes the limits global.
+
+Production variables on the host (the user sets them; never ask for the values in chat):
+`CHANNELS`, `CHANNEL_ID_SECRET` (a new one from `openssl rand -hex 32`, not the development one,
+and never rotated afterwards), `PUBLIC_BASE_URL` (the production https origin, no trailing slash),
+`TWILIO_AUTH_TOKEN`, `TWILIO_ACCOUNT_SID` (WhatsApp), `OPENAI_API_KEY` (realtime), the `VOICE_*`
+settings. No ngrok variables in production.
+
+Twilio for production (the user, in the console): point the webhooks to the production domain, not
+the ngrok one:
+
+- WhatsApp sender (or sandbox) **When a message comes in**:
+  `<PUBLIC_BASE_URL>/api/channels/whatsapp/webhook`, POST.
+- Voice number **A call comes in**: `<PUBLIC_BASE_URL>/api/channels/voice/incoming`, HTTP POST.
+  `relay` also needs the AI/ML addendum accepted.
+- A trial account only reaches verified numbers; the WhatsApp sandbox is for testing (a real sender
+  needs Meta approval).
+
+Check: `curl -sD - <PUBLIC_BASE_URL>/api/health` is 200, then one real message or call and its
+trace in Langfuse tagged `channel:<name>`. A 403 from Twilio means the signature URL differs from
+`PUBLIC_BASE_URL` + path.
+
+## 5. Langfuse (the user)
 
 - With the keys set, a chat message creates a `chat-turn` trace in environment `production`.
 - Online judge: walk the user through `docs/evaluation.md` → "Online evaluation in Langfuse" (LLM
@@ -68,6 +101,7 @@ production URL in `README.md` (Live) and `docs/deployment.md`.
   `context` → Metadata `$.context`, filter `chat-turn` + `production`, sampling). If they share a
   screenshot of the mapping, check it against that section.
 
-## 5. Report
+## 6. Report
 
-What is live (URL), what was checked, and what is pending with who has to do it.
+What is live (URL), what was checked, the channels and their Twilio webhooks, and what is pending
+with who has to do it.
