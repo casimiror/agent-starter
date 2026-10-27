@@ -14,6 +14,12 @@ from app.guardrails.base import Guardrail, run_guardrails
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
+def load_prompt(filename: str, **variables: str) -> str:
+    """A prompt file from `prompts/`. Shared with the voice realtime channel, whose model takes
+    the same instructions as the graph's."""
+    return (PROMPTS_DIR / filename).read_text().format(**variables)
+
+
 class AgentBuilder:
     """Composes LLM + prompt + tools + guardrails into one LangGraph graph.
 
@@ -43,7 +49,7 @@ class AgentBuilder:
         return self
 
     def with_prompt_file(self, filename: str, **variables: str) -> Self:
-        self._system_prompt = (PROMPTS_DIR / filename).read_text().format(**variables)
+        self._system_prompt = load_prompt(filename, **variables)
         return self
 
     def with_tools(self, tools: list[BaseTool]) -> Self:
