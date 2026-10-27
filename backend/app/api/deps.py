@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT, assistant_guardrails, build_assistant_agent
 from app.agents.builder import load_prompt
-from app.clients.openai_realtime import OpenAIRealtimeConnector
+from app.clients.voice_models.base import VoiceModelProvider
+from app.clients.voice_models.factory import VoiceModelFactory
 from app.core.config import get_settings
 from app.core.dedupe import RecentIds
 from app.core.llm import build_chat_models
@@ -111,16 +112,17 @@ def get_voice_service() -> VoiceService:
 
 
 @lru_cache
-def get_realtime_connector() -> OpenAIRealtimeConnector:
-    """Opens the connection to the speech-to-speech model. Tests replace it with a fake."""
-    settings = get_settings()
-    return OpenAIRealtimeConnector(settings.openai_api_key, settings.voice_realtime_model)
+def get_voice_models() -> list[VoiceModelProvider]:
+    """The speech-to-speech models the `VOICE_REALTIME_*` settings describe (provider, model, key,
+    voice), primary first and then the fallbacks. Tests replace it with fakes."""
+    return VoiceModelFactory.from_settings(get_settings())
 
 
 @lru_cache
 def get_realtime_voice_service() -> RealtimeVoiceService:
     """The assistant's prompt, tools and guardrails for the realtime voice mode: the same
-    definitions the text agent is built from (`get_chat_service`)."""
+    definitions the text agent is built from (`get_chat_service`). The model that speaks them is
+    apart (`get_voice_models`)."""
     settings = get_settings()
     sessions = get_sessions()
     conversations = ConversationRepository(ConversationDAO(sessions), MessageDAO(sessions))
@@ -133,8 +135,6 @@ def get_realtime_voice_service() -> RealtimeVoiceService:
         input_guardrails,
         output_guardrails,
         model=settings.voice_realtime_model,
-        voice_name=settings.voice_realtime_voice,
-        transcription_model=settings.voice_realtime_transcription_model,
         greeting=settings.voice_greeting,
     )
 

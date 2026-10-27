@@ -1,5 +1,5 @@
 """The Media Streams WebSocket through Starlette's TestClient: a signed handshake, Twilio's JSON
-messages in, the fake OpenAI connection behind it. No real Twilio or OpenAI."""
+messages in, the fake voice model behind it. No real Twilio or voice model provider."""
 
 import time
 
@@ -9,11 +9,12 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from twilio.request_validator import RequestValidator
 
-from app.api.deps import get_realtime_connector, get_realtime_voice_service
+from app.api.deps import get_realtime_voice_service, get_voice_models
 from app.api.routes.channels import include_channel_routers
+from app.clients.voice_models.base import SessionReady
 from app.core.config import get_settings
 from tests.channels.voice.realtime.realtime_fakes import (
-    FakeConnector,
+    FakeVoiceModel,
     make_lookup_tool,
     make_realtime_service,
     wait_until,
@@ -46,12 +47,12 @@ def make_client(mode="realtime", max_call_seconds=600, tools=None):
     ctx = make_realtime_service(tools, voice_mode=mode, voice_greeting="")
     # The setting is whole seconds; a test wants a fraction of one.
     ctx.settings.voice_max_call_seconds = max_call_seconds
-    connector = FakeConnector()
+    connector = FakeVoiceModel()
     app = FastAPI()
     include_channel_routers(app, ctx.settings)
     app.dependency_overrides[get_settings] = lambda: ctx.settings
     app.dependency_overrides[get_realtime_voice_service] = lambda: ctx.service
-    app.dependency_overrides[get_realtime_connector] = lambda: connector
+    app.dependency_overrides[get_voice_models] = lambda: [connector]
     call = ctx.voice.service.start_call(CALLER, "CA1")
     return TestClient(app), ctx, connector, call
 
@@ -71,8 +72,8 @@ def start(call):
 def open_stream(client, connector, call, ws):
     ws.send_json({"event": "connected", "protocol": "Call", "version": "1.0.0"})
     ws.send_json(start(call))
-    wait_until(lambda: "session.update" in connector.connection.types())
-    connector.connection.push({"type": "session.updated"})
+    wait_until(lambda: "configure" in connector.connection.types())
+    connector.connection.push(SessionReady())
     time.sleep(0.1)  # nothing is sent in reply: give the app time to mark the session ready
 
 
@@ -116,8 +117,8 @@ def test_audio_flows_both_ways_with_marks():
         open_stream(client, connector, call, ws)
 
         ws.send_json(media(pcm(20)))
-        wait_until(lambda: model.of_type("input_audio_buffer.append"))
-        assert model.of_type("input_audio_buffer.append")[0]["audio"] == pcm(20)
+        wait_until(lambda: model.of_type("append_audio"))
+        assert model.of_type("append_audio")[0]["audio"] == pcm(20)
 
         model.push(created("r1"))
         model.push(audio("r1", "i1", 40))
@@ -143,10 +144,10 @@ def test_a_function_call_runs_the_tool_and_the_turn_is_stored():
         model.push(heard("When are you open?"))
         model.push(created("r1"))
         model.push(call_args("r1", "c1", "lookup", '{"topic": "hours"}'))
-        wait_until(lambda: model.of_type("conversation.item.create"))
+        wait_until(lambda: model.of_type("tool_result"))
         model.push(done("r1"))
-        wait_until(lambda: model.of_type("response.create"))
-        assert model.types()[-2:] == ["conversation.item.create", "response.create"]
+        wait_until(lambda: model.of_type("respond"))
+        assert model.types()[-2:] == ["tool_result", "respond"]
         assert calls == [("hours", str(call.conversation_id))]
 
         model.push(created("r2"))
@@ -177,8 +178,8 @@ def test_barge_in_sends_clear_and_truncates_to_the_played_audio():
         time.sleep(0.05)  # let the app read the mark before the interruption
         model.push(SPEECH_STARTED)
         assert ws.receive_json() == {"event": "clear", "streamSid": "MZ1"}
-        wait_until(lambda: model.of_type("conversation.item.truncate"))
-        assert model.of_type("conversation.item.truncate")[0]["audio_end_ms"] == 100
+        wait_until(lambda: model.of_type("truncate"))
+        assert model.of_type("truncate")[0]["audio_end_ms"] == 100
 
 
 def test_an_input_guardrail_block_makes_the_model_say_the_canned_reply():
@@ -187,10 +188,8 @@ def test_an_input_guardrail_block_makes_the_model_say_the_canned_reply():
     with client.websocket_connect(PATH, headers=sign()) as ws:
         open_stream(client, connector, call, ws)
         model.push(heard(INJECTION))
-        wait_until(lambda: model.of_type("response.create"))
-        assert (
-            BLOCKED_INPUT_REPLY in model.of_type("response.create")[0]["response"]["instructions"]
-        )
+        wait_until(lambda: model.of_type("say"))
+        assert model.of_type("say")[0]["text"] == BLOCKED_INPUT_REPLY
         wait_until(lambda: ctx.messages.rows)
     assert [(role, text) for _, role, text in ctx.messages.rows] == [
         ("user", INJECTION),
@@ -221,5 +220,5 @@ def test_the_caller_number_is_not_in_what_the_model_is_sent():
     with client.websocket_connect(PATH, headers=sign()) as ws:
         open_stream(client, connector, call, ws)
         ws.send_json(media(pcm(10)))
-        wait_until(lambda: connector.connection.of_type("input_audio_buffer.append"))
+        wait_until(lambda: connector.connection.of_type("append_audio"))
     assert CALLER not in str(connector.connection.sent)

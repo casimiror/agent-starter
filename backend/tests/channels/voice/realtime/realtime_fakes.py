@@ -1,24 +1,27 @@
-"""Fakes for the realtime voice tests: a scripted OpenAI connection, a recording message store and
-a tool that notes how it was called. No OpenAI, no Twilio, no LLM."""
+"""Fakes for the realtime voice tests: a scripted voice model (a neutral provider, so the bridge is
+proven provider-agnostic), a recording message store and a tool that notes how it was called. No
+OpenAI, no Twilio, no LLM."""
 
 import asyncio
 import queue
 import time
 from types import SimpleNamespace
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT, assistant_guardrails
 from app.agents.builder import load_prompt
-from app.clients.openai_realtime import RealtimeError
+from app.clients.voice_models.base import MULAW_8K, AudioFormat, ModelEvent, VoiceModelError
 from app.services.channels.voice.realtime.service import RealtimeVoiceService
 from app.tools.builder import ToolBuilder
 from tests.channels.voice.voice_fakes import make_settings, make_voice
 
 
 class FakeRealtime:
-    """The OpenAI side. The test pushes server events; the app's sends are recorded.
+    """The model side. The test pushes neutral events; the bridge's commands are recorded as dicts
+    with a `type` (the command's name) and its arguments.
 
     Thread-safe on purpose: the Starlette TestClient runs the app in another thread."""
 
@@ -27,16 +30,37 @@ class FakeRealtime:
         self.closed = False
         self._incoming: queue.Queue = queue.Queue()
 
-    def push(self, event: dict | None) -> None:
-        """A server event; None closes the connection from the server side."""
+    def push(self, event: ModelEvent | None) -> None:
+        """A model event; None closes the connection from the model's side."""
         self._incoming.put(event)
 
-    async def send(self, event: dict) -> None:
+    def _record(self, kind: str, **fields: Any) -> None:
         if self.closed:
             raise RuntimeError("closed")
-        self.sent.append(event)
+        self.sent.append({"type": kind, **fields})
 
-    async def receive(self) -> dict | None:
+    async def configure(self, spec) -> None:
+        self._record("configure", spec=spec)
+
+    async def append_audio(self, audio: str) -> None:
+        self._record("append_audio", audio=audio)
+
+    async def respond(self) -> None:
+        self._record("respond")
+
+    async def say(self, text: str) -> None:
+        self._record("say", text=text)
+
+    async def cancel(self) -> None:
+        self._record("cancel")
+
+    async def truncate(self, item_id: str, audio_end_ms: int) -> None:
+        self._record("truncate", item_id=item_id, audio_end_ms=audio_end_ms)
+
+    async def tool_result(self, call_id: str, output: str) -> None:
+        self._record("tool_result", call_id=call_id, output=output)
+
+    async def receive(self) -> ModelEvent | None:
         while True:
             try:
                 return self._incoming.get_nowait()
@@ -55,16 +79,27 @@ class FakeRealtime:
         return [event for event in self.sent if event["type"] == kind]
 
 
-class FakeConnector:
-    def __init__(self, fail: bool = False) -> None:
+class FakeVoiceModel:
+    """A `VoiceModelProvider` that hands out one scripted connection."""
+
+    def __init__(
+        self,
+        fail: bool = False,
+        audio_format: AudioFormat = MULAW_8K,
+        name: str = "fake",
+        model: str = "fake-realtime",
+    ) -> None:
         self.connection = FakeRealtime()
         self.fail = fail
         self.connects = 0
+        self.audio_format = audio_format
+        self.name = name
+        self.model = model
 
     async def connect(self) -> FakeRealtime:
         self.connects += 1
         if self.fail:
-            raise RealtimeError("down")
+            raise VoiceModelError("down", kind="TimeoutError")
         return self.connection
 
 
@@ -114,8 +149,6 @@ def make_realtime_service(tools=None, messages=None, extra_output=(), **settings
         inputs,
         [*outputs, *extra_output],
         model=settings.voice_realtime_model,
-        voice_name=settings.voice_realtime_voice,
-        transcription_model=settings.voice_realtime_transcription_model,
         greeting=settings.voice_greeting,
         flush=lambda: flushed.append(1),
     )
