@@ -18,6 +18,7 @@ INCOMING_PATH = "/api/channels/voice/incoming"
 RELAY_WS_PATH = "/api/channels/voice/relay/ws"
 RELAY_ACTION_PATH = "/api/channels/voice/relay/action"
 GATHER_PATH = "/api/channels/voice/gather"
+STREAM_PATH = "/api/channels/voice/stream"
 
 # Twilio's <Say> rejects more than 4096 characters.
 MAX_SAY_CHARS = 3500
@@ -32,6 +33,12 @@ TIME_UP = "We've reached the time limit for this call. Thanks for calling. Goodb
 def relay_ws_url(settings: Settings) -> str:
     """The wss URL ConversationRelay connects to: same host as PUBLIC_BASE_URL."""
     return "wss://" + urlparse(settings.public_base_url).netloc + RELAY_WS_PATH
+
+
+def stream_url(settings: Settings) -> str:
+    """The wss URL Media Streams connects to. No query string (Twilio rejects one): what the
+    socket needs travels as a <Parameter>."""
+    return "wss://" + urlparse(settings.public_base_url).netloc + STREAM_PATH
 
 
 def gather_url(settings: Settings, conversation_id: UUID, empty_inputs: int = 0) -> str:
@@ -96,12 +103,23 @@ def incoming_relay(settings: Settings, visitor_id: UUID, conversation_id: UUID) 
     return _doc(response)
 
 
-# mode -> builder of the document that answers "a call comes in". A new mode (realtime) adds a
-# line here and its own routes in app/api/routes/channels/.
+def incoming_realtime(settings: Settings, visitor_id: UUID, conversation_id: UUID) -> str:
+    """Fork the call's audio to our WebSocket (Media Streams, bidirectional). Twilio runs no
+    further TwiML until the stream closes. Only the conversation id is passed: the socket
+    finds the visitor from the stored conversation."""
+    response = VoiceResponse()
+    stream = response.connect().stream(url=stream_url(settings))
+    stream.parameter(name="conversation_id", value=str(conversation_id))
+    return _doc(response)
+
+
+# mode -> builder of the document that answers "a call comes in". A new mode adds a line here, its
+# value in `Settings.voice_mode` and its own routes in app/api/routes/channels/.
 IncomingBuilder = Callable[[Settings, UUID, UUID], str]
 INCOMING: dict[str, IncomingBuilder] = {
     "relay": incoming_relay,
     "gather": incoming_gather,
+    "realtime": incoming_realtime,
 }
 
 

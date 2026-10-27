@@ -49,9 +49,13 @@ Where the pieces come from:
 | --- | --- | --- |
 | How it answers (tone, rules, scope) | `prompts/assistant.md` | `make test`, then `make eval args="--mode answer"` |
 | A new capability | a new tool: run `/new-tool` (one file in `app/tools/<area>/`, register in `registry.py`, unit test) | mention when to use it in `prompts/assistant.md`; add eval cases |
-| A new safety rule | a guardrail class in `app/guardrails/` with `name` and `check(text)`, added to `assistant_agent.py` | unit test in `tests/test_guardrails.py` |
+| A new safety rule | a guardrail class in `app/guardrails/` with `name` and `check(text)`, added in `assistant_guardrails` (`assistant_agent.py`) | unit test in `tests/test_guardrails.py` |
 | The links it may write | `ALLOWED_LINKS` in `.env` and Vercel | a `guardrail` eval case |
 | The model | `LLM_PROVIDER` / `LLM_MODEL` in `.env` and Vercel | `make eval` and compare the experiment in Langfuse |
+
+The prompt, the tools and `assistant_guardrails` are also what the `realtime` voice mode gives its
+audio model (`docs/channels.md`), so a change to them applies there too; that mode has no graph and
+is not exercised by `make eval`.
 
 Every behaviour change should be followed by an evaluation run: the evaluator runs this exact
 agent (see [`app/evals/README.md`](../evals/README.md)).

@@ -86,8 +86,8 @@ class Settings(BaseSettings):
 
     # Voice through Twilio (docs/channels.md). Required when CHANNELS includes voice (plus
     # TWILIO_AUTH_TOKEN, which signs the webhooks and the WebSocket handshake). The mode picks the
-    # implementation; an unknown one stops the app at startup. PR "realtime" adds a mode here.
-    voice_mode: Literal["relay", "gather"] = "relay"
+    # implementation; an unknown one stops the app at startup.
+    voice_mode: Literal["relay", "gather", "realtime"] = "relay"
     voice_language: str = "en-US"
     voice_greeting: str = "Hello, thanks for calling. How can I help you today?"
     # Spoken instead of any URL in a reply: a URL can't be read aloud usefully.
@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     voice_tts_provider: Literal["Google", "Amazon", "ElevenLabs"] = "ElevenLabs"
     voice_voice: str = ""  # empty: the provider's default voice
     voice_transcription_provider: Literal["Google", "Deepgram"] = "Deepgram"
+    # realtime only: a speech-to-speech model over Twilio Media Streams. One API key for every
+    # OpenAI use: OPENAI_API_KEY above (also what an `openai:` entry in LLM_FALLBACKS uses), so
+    # there is a single place to set and rotate it.
+    voice_realtime_provider: Literal["openai"] = "openai"
+    # gpt-realtime-2.1-mini is the cheaper option.
+    voice_realtime_model: str = "gpt-realtime-2.1"
+    voice_realtime_voice: str = "marin"
+    # Transcribes the caller's speech: it feeds the guardrails and the stored history.
+    voice_realtime_transcription_model: str = "gpt-4o-mini-transcribe"
 
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.
@@ -159,6 +168,8 @@ class Settings(BaseSettings):
             # Voice has no REST client (replies are TwiML or WebSocket text): it only needs the
             # token that verifies Twilio's calls. With whatsapp too, it is already required above.
             required.append(("TWILIO_AUTH_TOKEN", self.twilio_auth_token))
+            if self.voice_mode == "realtime":
+                required.append(("OPENAI_API_KEY", self.openai_api_key))
         missing = list(dict.fromkeys(name for name, value in required if not value))
         if missing:
             raise RuntimeError(
