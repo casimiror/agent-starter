@@ -56,3 +56,7 @@ def test_whatsapp_and_voice_name_the_auth_token_once():
     with pytest.raises(RuntimeError) as error:
         _settings(channels=["whatsapp", "voice"], **BASE).check_channels()
     assert str(error.value).count("TWILIO_AUTH_TOKEN") == 1
+
+
+def test_voice_max_pending_turns_defaults_to_two():
+    assert Settings(_env_file=None).voice_max_pending_turns == 2

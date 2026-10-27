@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     # Per caller (anonymous visitor id), counted when a call comes in.
     rate_limit_voice: str = "5/minute"
     voice_max_call_seconds: int = Field(default=600, gt=0)
+    # relay only: prompts accepted at once per call (the one running plus those queued behind it).
+    # Beyond it a prompt is dropped, so a flood on one socket can't pile up LLM turns.
+    voice_max_pending_turns: int = Field(default=2, gt=0)
     # relay only: who speaks and who listens (Twilio ConversationRelay providers).
     voice_tts_provider: Literal["Google", "Amazon", "ElevenLabs"] = "ElevenLabs"
     voice_voice: str = ""  # empty: the provider's default voice

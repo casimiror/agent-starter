@@ -229,6 +229,7 @@ Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`,
 | `VOICE_LINK_PHRASE` | "I can't read links aloud; you'll find it on our website." | said instead of any URL |
 | `RATE_LIMIT_VOICE` | `5/minute` | calls per caller (anonymous visitor id) |
 | `VOICE_MAX_CALL_SECONDS` | `600` | longest call |
+| `VOICE_MAX_PENDING_TURNS` | `2` | relay only: prompts running or queued at once per call; more are dropped |
 | `VOICE_TTS_PROVIDER` | `ElevenLabs` | relay only: `Google`, `Amazon` or `ElevenLabs` |
 | `VOICE_VOICE` | empty | relay only: the provider's voice name; empty is its default |
 | `VOICE_TRANSCRIPTION_PROVIDER` | `Deepgram` | relay only: `Google` or `Deepgram` |
@@ -269,7 +270,9 @@ opens the WebSocket:
    (`ChatService.handle_turn(..., channel="voice")`), the reply goes through `format_for_speech`
    and is sent as `{"type":"text","token":<reply>,"last":true}`. A failed turn sends a spoken
    apology. One turn at a time per call (a lock), so a caller who speaks twice gets two answers in
-   order, never two concurrent turns. Observability is flushed after each turn.
+   order, never two concurrent turns; at most `VOICE_MAX_PENDING_TURNS` prompts wait at once
+   (the rest are dropped with a warning). A second `setup` on the same socket is ignored.
+   Observability is flushed after each turn.
 4. `interrupt` (see below), `dtmf`, `error`: logged (never the digit or the words), nothing sent
    back.
 5. After `VOICE_MAX_CALL_SECONDS` the app sends `{"type":"end"}`; Twilio then closes the socket and

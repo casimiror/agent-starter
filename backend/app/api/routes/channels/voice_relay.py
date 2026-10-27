@@ -44,7 +44,9 @@ async def relay_socket(
         return
     await websocket.accept()
 
-    session = RelaySession(service, settings.voice_max_call_seconds, clock)
+    session = RelaySession(
+        service, settings.voice_max_call_seconds, clock, settings.voice_max_pending_turns
+    )
     turns: set[asyncio.Task] = set()
 
     async def respond(message: dict) -> None:
@@ -88,6 +90,9 @@ async def relay_socket(
     finally:
         for task in turns:
             task.cancel()
+        # Wait for them to finish cancelling so none outlives the socket (or logs "never
+        # retrieved"); their errors were already handled in `respond`.
+        await asyncio.gather(*turns, return_exceptions=True)
         try:
             await websocket.close()
         except (RuntimeError, OSError):  # already closed by the peer

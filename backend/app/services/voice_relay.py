@@ -28,8 +28,11 @@ class RelaySession:
         voice: VoiceService,
         max_seconds: float,
         clock: Callable[[], float] = time.monotonic,
+        max_pending: int = 2,
     ) -> None:
         self._voice = voice
+        self._max_pending = max_pending
+        self._pending = 0  # prompts running or waiting for the turn lock
         self._max_seconds = max_seconds
         self._clock = clock
         self._started = clock()
@@ -41,6 +44,7 @@ class RelaySession:
         self.ended = False
         # A reply was sent and no interrupt has trimmed it yet (the greeting is not a reply).
         self._unheard_reply = False
+        self._setup_seen = False
 
     @property
     def expired(self) -> bool:
@@ -93,6 +97,12 @@ class RelaySession:
         return fields
 
     async def _setup(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._setup_seen:
+            # A second setup could rebind the session to another conversation: only the first
+            # counts. Nothing from the message is logged.
+            log.warning("voice setup ignored, already set up", extra=self._fields())
+            return []
+        self._setup_seen = True
         self.call_sid = str(message.get("callSid") or "")
         parameters = message.get("customParameters") or {}
         try:
@@ -128,11 +138,20 @@ class RelaySession:
         text = str(message.get("voicePrompt") or "").strip()
         if not text or self.call is None:
             return []
-        async with self._turn:
-            if self.ended:
-                return []
-            if self.expired:
-                return self.end()
-            reply = await asyncio.to_thread(self._voice.answer, self.call, text, self.call_sid)
-            self._unheard_reply = True  # a later interrupt may cut this reply short
+        if self._pending >= self._max_pending:
+            # Never the text. Each queued prompt is an LLM turn we'd pay for and the caller
+            # could not have waited for.
+            log.warning("voice prompt dropped, too many pending", extra=self._fields())
+            return []
+        self._pending += 1
+        try:
+            async with self._turn:
+                if self.ended:
+                    return []
+                if self.expired:
+                    return self.end()
+                reply = await asyncio.to_thread(self._voice.answer, self.call, text, self.call_sid)
+                self._unheard_reply = True  # a later interrupt may cut this reply short
+        finally:
+            self._pending -= 1
         return [{"type": "text", "token": reply, "last": True}]
