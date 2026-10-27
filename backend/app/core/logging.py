@@ -24,8 +24,9 @@ request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
 # Attributes every LogRecord has: anything else on a record came from `extra`.
 _STANDARD = set(vars(logging.makeLogRecord({}))) | {"message", "asctime", "request_id"}
-# Libraries that log every HTTP call or request at INFO; our access log covers requests.
-_NOISY = ("httpx", "httpx2", "httpcore", "openai", "anthropic", "uvicorn.access")
+# Libraries that log every HTTP call or request at INFO; our access log covers requests. Twilio's
+# client also logs request bodies, which hold the recipient's phone number.
+_NOISY = ("httpx", "httpx2", "httpcore", "openai", "anthropic", "twilio", "uvicorn.access")
 
 
 def _mask(value: Any) -> Any:

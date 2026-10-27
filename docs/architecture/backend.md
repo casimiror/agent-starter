@@ -27,6 +27,7 @@ api/routes  ->  services  ->  repositories  ->  db/daos  ->  Postgres
 | DAOs | `app/db/daos/` | One class per table, subclass `BaseDAO[Row]`, each call is its own short transaction | be imported outside repositories |
 | Domain | `app/domain/` | Pydantic models the app passes around | know about SQLAlchemy |
 | Agents | `app/agents/` | `AgentBuilder` composes LLM + prompt + tools + guardrails into a `StateGraph` | inline prompts (they live in `app/agents/prompts/*.md`) |
+| Clients | `app/clients/` | Wrappers of an external API a service calls (`WhatsAppSender` over Twilio's REST API); injected through `deps.py`, they never raise into the caller | hold business rules or be imported by routes |
 | Tools | `app/tools/<area>/` | One file per tool, `build_<name>_tool(deps) -> BaseTool` via `ToolBuilder`; registered in `app/tools/registry.py` | use DAOs or sessions directly |
 | Guardrails | `app/guardrails/` | Pure checks on input/output text; unit-tested | call an LLM (unless stated) |
 | Core | `app/core/` | Settings, LLM factory, rate limiter, observability | depend on routes or services |
@@ -41,6 +42,7 @@ Wiring of concrete classes happens **only** in `app/api/deps.py`.
 | `POST /api/chat` | `message`, `conversation_id?`, `visitor_id?` | `conversation_id`, `message_id` (the stored reply), `reply` |
 | `PUT /api/messages/{id}/feedback` | `{"rating": "up" \| "down"}` | 204; 404 if `id` isn't an assistant message |
 | `DELETE /api/messages/{id}/feedback` | | 204 (idempotent); 404 as above |
+| `POST /api/channels/whatsapp/webhook` | Twilio form (`From`, `To`, `Body`, `MessageSid`, `NumMedia`); only with `whatsapp` in `CHANNELS` | `200` and an empty `<Response/>`; `403` bad signature, `400` missing `From`/`MessageSid`, `413` body over 64 KB |
 
 Limits: `RATE_LIMIT_CHAT` (10/min) and `RATE_LIMIT_FEEDBACK` (30/min) per client IP, counted in
 `RATE_LIMIT_STORAGE_URI` (`memory://` per process by default; a Redis URL makes it global across
@@ -81,6 +83,25 @@ shares: an anonymous keyed-hash `visitor_id` per sender, the conversation to con
 the channel while inside `CONVERSATION_WINDOW_HOURS`) and a per-visitor lock. `hit_sender` in
 `app/core/rate_limit.py` limits per sender on the limiter's storage. Both are wired or used by the
 channel routers; details and the PII rule in `docs/channels.md`.
+
+### WhatsApp turn
+
+Unlike `/api/chat`, the HTTP response does not carry the reply: Twilio gives a webhook ~15 s.
+
+1. `routes/channels/whatsapp.py`: 64 KB body cap (413), `X-Twilio-Signature` checked against
+   `PUBLIC_BASE_URL` (403), `From`/`MessageSid` required (400), repeated `MessageSid` dropped
+   (`core/dedupe.py`, per process), then `200` with an empty `<Response/>` and a `BackgroundTasks`
+   task.
+2. `WhatsAppService.handle_message` (background, never raises): `visitor_id` from `From`,
+   `hit_sender(RATE_LIMIT_WHATSAPP, "whatsapp", visitor_id)`, canned reply for media or empty
+   text, then under `ChannelConversations.lock`: `resolve` and
+   `ChatService.handle_turn(..., channel="whatsapp")`. A failing turn sends an apology.
+3. The reply goes through `format_for_whatsapp` (links, bold, headings, split into at most three
+   messages of 1600 characters; never alters a URL) and `WhatsAppSender.send` (Twilio REST API),
+   from the number the user wrote to. `observability.flush` runs at the end.
+
+Logs hold `visitor_id`, `message_sid`, Twilio error codes and exception types: never `From`,
+`To`, the text or the reply.
 
 ## Tools
 
@@ -128,7 +149,8 @@ documents each variable. Notable aliases: `DATABASE_URL` falls back to `POSTGRES
 Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` sets `serverless`.
 `CHANNELS`, `CHANNEL_ID_SECRET`, `PUBLIC_BASE_URL` and `CONVERSATION_WINDOW_HOURS` configure the
 channels beyond the web UI; `create_app` fails at startup on an unknown channel or a missing
-secret/base URL (`docs/channels.md`). `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
+secret/base URL (`docs/channels.md`). With `whatsapp` enabled, `TWILIO_ACCOUNT_SID`,
+`TWILIO_AUTH_TOKEN` are required too, and `RATE_LIMIT_WHATSAPP` (10/minute) limits per sender. `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
 
 ## Resilience

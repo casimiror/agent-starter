@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.assistant_agent import build_assistant_agent
 from app.core.config import get_settings
+from app.core.dedupe import RecentIds
 from app.core.llm import build_chat_models
 from app.db.daos.conversation_dao import ConversationDAO
 from app.db.daos.message_dao import MessageDAO
@@ -18,9 +19,11 @@ from app.repositories.feedback_repository import FeedbackRepository
 from app.services.channel_conversations import ChannelConversations
 from app.services.chat_service import ChatService
 from app.services.feedback_service import FeedbackService
+from app.services.whatsapp_service import WhatsAppService
 from app.tools.registry import ToolDeps, build_assistant_tools
 
 if TYPE_CHECKING:
+    from app.clients.whatsapp_sender import WhatsAppSender
     from app.services.eval_service import EvalService
 
 
@@ -56,6 +59,37 @@ def get_channel_conversations() -> ChannelConversations:
     conversations = ConversationRepository(ConversationDAO(sessions), MessageDAO(sessions))
     window = timedelta(hours=settings.conversation_window_hours)
     return ChannelConversations(conversations, settings.channel_id_secret, window)
+
+
+@lru_cache
+def get_whatsapp_sender() -> "WhatsAppSender":
+    # Imported here so a deployment without WhatsApp never loads the Twilio SDK.
+    from twilio.http.http_client import TwilioHttpClient
+    from twilio.rest import Client
+
+    from app.clients.whatsapp_sender import WhatsAppSender
+
+    settings = get_settings()
+    # A timeout, so a stuck Twilio call can't hold the per-visitor lock forever.
+    http = TwilioHttpClient(timeout=15)
+    client = Client(settings.twilio_account_sid, settings.twilio_auth_token, http_client=http)
+    return WhatsAppSender(client)
+
+
+@lru_cache
+def get_whatsapp_service() -> WhatsAppService:
+    return WhatsAppService(
+        get_channel_conversations(),
+        get_chat_service(),
+        get_whatsapp_sender(),
+        get_settings().rate_limit_whatsapp,
+    )
+
+
+@lru_cache
+def get_whatsapp_dedupe() -> RecentIds:
+    """Twilio retries seen in the last minutes. Per process (docs/channels.md)."""
+    return RecentIds()
 
 
 @lru_cache

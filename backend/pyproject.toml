@@ -17,6 +17,7 @@ dependencies = [
     "redis>=5",
     "slowapi>=0.1.10",
     "sqlalchemy>=2",
+    "twilio>=9.12.0",
 ]
 
 [dependency-groups]

@@ -122,3 +122,24 @@ def test_lazy_loader_imports_the_module_only_when_called(monkeypatch):
     module.router = _router("/fake")
     monkeypatch.setitem(sys.modules, "fake_channel_module", module)
     assert _lazy("fake_channel_module")() is module.router
+
+
+def test_whatsapp_needs_the_twilio_credentials():
+    base = {"channel_id_secret": "s", "public_base_url": "https://x.example"}
+    with pytest.raises(RuntimeError, match="TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN"):
+        _settings(channels=["whatsapp"], **base).check_channels()
+    with pytest.raises(RuntimeError, match="TWILIO_AUTH_TOKEN"):
+        _settings(channels=["whatsapp"], twilio_account_sid="AC1", **base).check_channels()
+    _settings(
+        channels=["whatsapp"], twilio_account_sid="AC1", twilio_auth_token="t", **base
+    ).check_channels()
+
+
+def test_voice_alone_does_not_need_twilio_whatsapp_credentials():
+    _settings(
+        channels=["voice"], channel_id_secret="s", public_base_url="https://x.example"
+    ).check_channels()
+
+
+def test_whatsapp_rate_limit_defaults_to_ten_a_minute():
+    assert _settings().rate_limit_whatsapp == "10/minute"
