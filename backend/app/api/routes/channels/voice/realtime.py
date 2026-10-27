@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.deps import get_realtime_connector, get_realtime_voice_service
-from app.api.twilio_security import handshake_valid
+from app.api.routes.channels.twilio_security import handshake_valid
 from app.clients.realtime import RealtimeConnector
 from app.core.config import Settings, get_settings
 from app.services import voice_twiml

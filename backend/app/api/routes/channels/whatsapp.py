@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 
 from app.api.deps import get_whatsapp_dedupe, get_whatsapp_service
-from app.api.twilio_security import public_url, verified_form
+from app.api.routes.channels.twilio_security import public_url, verified_form
 from app.core.config import Settings, get_settings
 from app.core.dedupe import RecentIds
 from app.services.whatsapp_service import WhatsAppService
