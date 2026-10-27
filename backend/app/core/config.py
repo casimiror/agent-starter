@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     # Per sender (anonymous visitor id), not per IP: every webhook call comes from Twilio.
     rate_limit_whatsapp: str = "10/minute"
+    # Timeout of each call to Twilio's REST API when sending a reply. Short on purpose: a stuck
+    # call delays that sender's next replies (they go out in order), and each one holds a thread.
+    twilio_send_timeout_seconds: float = Field(default=5.0, gt=0)
 
     # Voice through Twilio (docs/channels.md). Required when CHANNELS includes voice (plus
     # TWILIO_AUTH_TOKEN, which signs the webhooks and the WebSocket handshake). The mode picks the

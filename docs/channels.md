@@ -44,6 +44,7 @@ channel=<name>)`, so they live once, in `ChannelConversations`
 | `visitor_id(sender)` | Anonymous UUID for a phone number or call id |
 | `resolve(visitor_id, channel)` | The conversation to continue, or a new one |
 | `lock(visitor_id)` | Context manager held around `resolve` + the turn |
+| `send_lock(visitor_id)` | Keeps one sender's replies in order; taken before `lock` is released |
 
 Wiring: `get_channel_conversations()` in `app/api/deps.py`.
 
@@ -70,6 +71,12 @@ on topic. The latest conversation is found with the (`visitor_id`, `channel`, `c
 Two messages from one sender in quick succession would both find no fresh conversation and open
 two. Callers wrap `resolve` and the turn in `with channels.lock(visitor_id):`; the same visitor
 waits, different visitors do not block each other.
+
+Sending a reply is slow and can hang, so it is not done inside that lock. WhatsApp locks hand over
+hand: inside `lock` it takes `send_lock(visitor_id)`, leaves `lock`, then sends. The sender's next
+message can run its LLM turn while the previous reply is still going out, and replies still leave
+in order. Each Twilio call has `TWILIO_SEND_TIMEOUT_SECONDS` (default 5), and the remaining parts
+of a reply are dropped after the first failed one.
 
 **Limitation:** it is a `threading.Lock` per key, so it works within one process only. With several
 workers or several Vercel instances two messages can still race. Closing that needs a database
@@ -142,7 +149,8 @@ Twilio REST wrapper `WhatsAppSender` (`app/clients/whatsapp_sender.py`).
 3. `WhatsAppService` does the rest: per-sender limit (polite "wait a minute" message when over),
    media or empty text gets "I can only read text messages", otherwise `resolve` +
    `ChatService.handle_turn(..., channel="whatsapp")` under the per-visitor lock. If the turn
-   fails the user gets a short apology instead of silence. Observability is flushed afterwards.
+   fails the user gets a short apology instead of silence. If formatting the reply fails, the raw
+   reply (cut to one message) is sent, never the apology. Observability is flushed afterwards.
 4. The reply is formatted for WhatsApp and sent with the REST API, from the number the user wrote
    to (the webhook's `To`), so there is no "from" setting.
 

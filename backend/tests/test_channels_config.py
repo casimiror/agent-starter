@@ -168,3 +168,7 @@ def test_a_bad_sender_limit_fails_at_startup(channel, setting, name):
             twilio_auth_token="t",
             **{setting: "ten per minute"},
         ).check_channels()
+
+
+def test_twilio_send_timeout_defaults_to_five_seconds():
+    assert _settings().twilio_send_timeout_seconds == 5

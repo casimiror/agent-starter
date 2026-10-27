@@ -149,3 +149,12 @@ def test_locks_are_released_from_memory_when_nobody_waits():
     with service.lock(visitor):
         pass
     assert service._locks == {}
+
+
+def test_turn_and_send_locks_are_independent_and_cleaned_up():
+    service = _service()
+    visitor = uuid4()
+    with service.lock(visitor):
+        with service.send_lock(visitor):  # hand over hand: both held at once
+            assert len(service._locks) == 2
+    assert service._locks == {}
