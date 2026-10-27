@@ -46,7 +46,10 @@ Only ask what `plan.md` and `$ARGUMENTS` leave open.
       cheaper). Needs a WebSocket host and `OPENAI_API_KEY`.
    3. **Basic Gather**: `VOICE_MODE=gather`. The simplest: plain webhooks, works on Vercel. Noticeable
       pauses between turns and a ~15 s limit per turn (a turn with several tool calls can exceed it).
-3. If realtime: **model**, `gpt-realtime-2.1` (Recommended) or `gpt-realtime-2.1-mini`.
+3. If realtime: **model**, `gpt-realtime-2.1` (Recommended) or `gpt-realtime-2.1-mini`. Only
+   `openai` exists as a provider (`VOICE_REALTIME_PROVIDER`); another is a module plus a registry
+   line (`docs/channels.md` > How to add a voice model provider). Offer `VOICE_REALTIME_FALLBACKS`
+   (tried only as a call starts, same voice) only if they want a backup model.
 4. If Voice: the **voice language** (BCP 47, e.g. `es-MX`, `en-US`) if `plan.md` does not give it.
    For relay, also the TTS/transcription providers only if the defaults (`ElevenLabs`, `Deepgram`)
    do not cover the language; the voice must exist for that provider and language.
@@ -73,7 +76,8 @@ the new defaults in `.env.example`:
   from `plan.md` and `backend/app/agents/prompts/assistant.md`; it is the first thing the caller
   hears). `VOICE_LANGUAGE` and `VOICE_LINK_PHRASE` (replaces any URL, e.g. "You'll find the link in
   our chat or on our website.") apply **only to relay and gather**; realtime ignores both. Relay: `VOICE_TTS_PROVIDER`,
-  `VOICE_VOICE`, `VOICE_TRANSCRIPTION_PROVIDER` if not the defaults. Realtime: `VOICE_REALTIME_MODEL`.
+  `VOICE_VOICE`, `VOICE_TRANSCRIPTION_PROVIDER` if not the defaults. Realtime: `VOICE_REALTIME_MODEL`
+  (and `VOICE_REALTIME_PROVIDER` / `VOICE_REALTIME_FALLBACKS` if not the defaults).
   Adjust `RATE_LIMIT_WHATSAPP`, `RATE_LIMIT_VOICE` and `VOICE_MAX_CALL_SECONDS` only if `plan.md`
   asks for it.
 

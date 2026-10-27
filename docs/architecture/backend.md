@@ -50,9 +50,11 @@ services/channels/     conversations.py (shared),
                        whatsapp/ service.py, format.py
                        voice/ service.py, format.py, twiml.py, relay.py,
                               realtime/ service.py, session.py
-clients/               whatsapp_sender.py, openai_realtime.py   (flat: <provider>_<what>.py)
+clients/               whatsapp_sender.py (single file),
+                       voice_models/ base.py, builder.py, factory.py, openai.py
 tests/channels/        test_channel_conversations.py, test_channels_config.py,
                        whatsapp/..., voice/..., voice/realtime/... (fakes next to their tests)
+tests/clients/         voice_models/ test_openai_provider.py, test_voice_model_factory.py
 ```
 
 A new channel `<name>` goes in `routes/channels/<name>/` (a single `<name>.py` is fine until it
@@ -175,23 +177,28 @@ signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSessi
 
 - `RealtimeSession` (`app/services/channels/voice/realtime/session.py`) is the bridge, with no socket code. On
   Twilio `start` it loads the call (`VoiceService.find_call`), opens the model connection
-  through a `RealtimeConnector` (`app/clients/openai_realtime.py`, a Protocol; `OpenAIRealtimeConnector`
-  uses `websockets`) and runs two directions in one event loop: Twilio events in, model events in.
+  through the first `VoiceModelProvider` that connects (`app/clients/voice_models/`: the primary
+  model, then `VOICE_REALTIME_FALLBACKS`, only as the call starts) and runs two directions in one
+  event loop: Twilio events in, model events in. It speaks only the neutral events and commands of
+  `voice_models/base.py`; `OpenAIRealtimeProvider` (`voice_models/openai.py`, over `websockets`)
+  owns every OpenAI event name and the `session.update`. See `docs/channels.md` > Realtime.
   State per response: audio sent and played (from Twilio `mark` echoes), transcript so far, whether
   it was cut. Barge-in and guardrail blocks go through one routine (`_clear_playback`): Twilio
-  `clear` plus `conversation.item.truncate` with the played milliseconds. The session creates
-  every response itself (`create_response: false`): it holds the answer until the caller's
+  `clear` plus the model's `truncate` with the played milliseconds. The session creates
+  every response itself (automatic responses are off): it holds the answer until the caller's
   transcript passed the input guardrails (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`, then it answers
   anyway).
 - `RealtimeVoiceService` (`app/services/channels/voice/realtime/service.py`) is what the session needs from
-  the app: `session_update()` (the agent's prompt file via `load_prompt`, its tools converted by
-  `realtime_tools`), `check_input` / `check_output` (the lists from `assistant_guardrails`, the
+  the app: `session_spec()` (the agent's prompt file via `load_prompt`, its tools converted by
+  `tool_specs` into neutral function specs; the provider turns it into its own session setup),
+  `check_input` / `check_output` (the lists from `assistant_guardrails`, the
   same objects the graph is built with), `run_tool` (the tool with `config={"configurable":
   {"conversation_id": ...}}`, errors as UPPERCASE-coded strings) and `record_turn` (the repository
   `append` for both messages, one `trace_turn` with the `channel:voice` tag, flush). It blocks, so
   the session calls it with `asyncio.to_thread`.
-- Wiring in `deps.py`: `get_realtime_connector`, `get_realtime_voice_service`. Tests override both
-  (`tests/channels/voice/realtime/realtime_fakes.py`).
+- Wiring in `deps.py`: `get_voice_models` (`VoiceModelFactory.from_settings`: builder + factory for
+  the voice model) and `get_realtime_voice_service` (the agent, unchanged and shared). Tests
+  override both (`tests/channels/voice/realtime/realtime_fakes.py` has a fake provider).
 
 A turn is a response (plus its tool follow-ups). It is stored when the caller has heard the reply
 or it was cut, so an interrupted reply is stored as the played part. Guardrails on transcripts are
@@ -253,7 +260,8 @@ With `voice` enabled `TWILIO_AUTH_TOKEN` is required; `VOICE_MODE` (`relay`, `ga
 `VOICE_LINK_PHRASE`, `RATE_LIMIT_VOICE` (5/minute per caller), `VOICE_MAX_CALL_SECONDS` and, for
 `relay`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` configure it. With
 `VOICE_MODE=realtime` `OPENAI_API_KEY` is required too (the key `LLM_FALLBACKS` openai entries
-use), plus `VOICE_REALTIME_PROVIDER` (`openai`), `VOICE_REALTIME_MODEL`, `VOICE_REALTIME_VOICE` and
+use), plus `VOICE_REALTIME_PROVIDER` (`openai`; a name in the voice model registry, unknown stops
+the app at startup), `VOICE_REALTIME_MODEL`, `VOICE_REALTIME_FALLBACKS`, `VOICE_REALTIME_VOICE` and
 `VOICE_REALTIME_TRANSCRIPTION_MODEL` and `VOICE_REALTIME_TRANSCRIPT_WAIT_MS`.
 `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
