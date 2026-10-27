@@ -47,3 +47,7 @@ def test_the_other_voice_modes_do_not_need_it(mode):
 
 def test_realtime_without_the_voice_channel_needs_nothing():
     _settings(voice_mode="realtime").check_channels()
+
+
+def test_transcript_wait_defaults_to_1500_ms():
+    assert Settings(_env_file=None).voice_realtime_transcript_wait_ms == 1500

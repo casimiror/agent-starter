@@ -71,6 +71,14 @@ def heard(text, item="u1"):
     }
 
 
+def committed(item="u1"):
+    return {"type": "input_audio_buffer.committed", "item_id": item}
+
+
+def transcription_failed(item="u1"):
+    return {"type": "conversation.item.input_audio_transcription.failed", "item_id": item}
+
+
 def call_args(rid, call_id, name, arguments):
     return {
         "type": "response.function_call_arguments.done",
@@ -109,7 +117,7 @@ async def settle():
 class Call:
     """One call: the session under test, Twilio's side as a queue and a list."""
 
-    def __init__(self, tools=None, max_seconds=10.0, connector=None, **settings):
+    def __init__(self, tools=None, max_seconds=10.0, connector=None, wait_s=1.5, **settings):
         settings.setdefault("voice_greeting", "")  # most tests want a quiet start
         self.ctx = make_realtime_service(tools, **settings)
         self.call = self.ctx.voice.service.start_call(CALLER, "CA1")
@@ -118,7 +126,7 @@ class Call:
         self.from_twilio: asyncio.Queue = asyncio.Queue()
         self.to_twilio: list[dict] = []
         self.session = RealtimeSession(
-            self.ctx.service, self.connector, self._receive, self._send, max_seconds
+            self.ctx.service, self.connector, self._receive, self._send, max_seconds, wait_s
         )
         self.task: asyncio.Task | None = None
 
@@ -716,3 +724,126 @@ async def test_the_callers_number_is_nowhere(caplog):
     # The words themselves never reach the logs either.
     assert "When are you open" not in str([vars(r) for r in caplog.records])
     assert "Nine to five" not in str([vars(r) for r in caplog.records])
+
+
+# --- the answer waits for the input guardrails -------------------------------------------------
+
+
+@scenario
+async def test_a_blocked_transcript_never_reaches_the_model_and_the_canned_text_is_spoken():
+    h = Call()
+    await h.open()
+    h.push(committed("u1"))
+    await settle()
+    assert h.model.of_type("response.create") == []  # held until the transcript is checked
+
+    h.push(heard(INJECTION, "u1"))
+    await until(lambda: h.model.of_type("response.create"))
+    (say,) = h.model.of_type("response.create")
+    assert BLOCKED_INPUT_REPLY in say["response"]["instructions"]  # not a plain response.create
+    assert say["response"]["tool_choice"] == "none"
+    assert h.model.of_type("response.cancel") == []  # there was no model reply to cancel
+    await until(lambda: h.ctx.records)
+    assert h.stored() == [("user", INJECTION), ("assistant", BLOCKED_INPUT_REPLY)]
+    await h.hang_up()
+
+
+@scenario
+async def test_a_passing_transcript_asks_the_model_to_answer():
+    h = Call()
+    await h.open()
+    h.push(committed("u1"))
+    await settle()
+    assert h.model.of_type("response.create") == []
+    h.push(heard("When are you open?", "u1"))
+    await until(lambda: h.model.of_type("response.create"))
+    assert h.model.of_type("response.create") == [{"type": "response.create"}]
+
+    h.push(created("r1"), audio("r1", "i1"), words_done("r1", "Nine to five."), done("r1"))
+    await until(lambda: h.twilio_events("mark"))
+    await h.twilio(mark("m0"))
+    await until(lambda: h.stored())
+    assert h.stored() == [("user", "When are you open?"), ("assistant", "Nine to five.")]
+    await h.hang_up()
+
+
+@scenario
+async def test_a_late_transcript_does_not_stall_the_call():
+    h = Call(wait_s=0.05)
+    await h.open()
+    h.push(committed("u1"))
+    await until(lambda: h.model.of_type("response.create"))  # answered without the transcript
+    assert h.model.of_type("response.create") == [{"type": "response.create"}]
+    h.push(created("r1"))
+    h.push(heard("When are you open?", "u1"))  # lands later: attached to that reply
+    await settle()
+    assert len(h.model.of_type("response.create")) == 1
+    await h.hang_up()
+
+
+@scenario
+async def test_a_failed_transcription_answers_without_waiting_for_the_timeout():
+    h = Call(wait_s=30)
+    await h.open()
+    h.push(committed("u1"), transcription_failed("u1"))
+    await until(lambda: h.model.of_type("response.create"))
+    assert h.model.of_type("response.create") == [{"type": "response.create"}]
+    await h.hang_up()
+
+
+@scenario
+async def test_two_turns_waiting_behind_a_busy_response_collapse_into_one_answer():
+    h = Call()
+    await h.open()
+    h.push(created("r0"))  # a response is being generated
+    await settle()
+    h.push(committed("u1"), heard("Hello", "u1"), committed("u2"), heard("again", "u2"))
+    await settle()
+    assert h.model.of_type("response.create") == []
+    h.push(done("r0", status="cancelled"))
+    await until(lambda: h.model.of_type("response.create"))
+    await settle()
+    assert len(h.model.of_type("response.create")) == 1
+    await h.hang_up()
+
+
+@scenario
+async def test_an_active_response_error_resets_the_flags_and_asks_again_later():
+    h = Call([make_lookup_tool()])
+    await h.open()
+    h.push(heard("When are you open?"), created("r1"))
+    h.push(call_args("r1", "c1", "lookup", '{"topic": "hours"}'), done("r1"))
+    await until(lambda: h.model.of_type("response.create"))  # the tool follow-up
+    assert h.session._awaiting_created and h.session._continue is not None
+
+    h.push(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "conversation_already_has_active_response",
+            },
+        }
+    )
+    await until(lambda: not h.session._awaiting_created)
+    assert h.session._continue is None
+    assert len(h.model.of_type("response.create")) == 1  # not retried while that one is active
+
+    h.push(created("r2"), done("r2"))  # the response that was active finishes
+    await until(lambda: len(h.model.of_type("response.create")) == 2)
+    await h.hang_up()
+
+
+@scenario
+async def test_an_other_error_also_clears_the_flags_without_retrying():
+    h = Call()
+    await h.open()
+    h.push(committed("u1"), heard("Hello there", "u1"))
+    await until(lambda: h.model.of_type("response.create"))
+    assert h.session._awaiting_created
+    h.push({"type": "error", "error": {"type": "invalid_request_error", "code": "x"}})
+    await until(lambda: not h.session._awaiting_created)
+    assert h.session._continue is None
+    await settle()
+    assert len(h.model.of_type("response.create")) == 1
+    await h.hang_up()

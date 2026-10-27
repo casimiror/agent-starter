@@ -19,7 +19,11 @@ def test_session_update_configures_twilio_audio_the_prompt_and_the_tools():
     assert session["output_modalities"] == ["audio"]
     assert session["audio"]["input"]["format"] == {"type": "audio/pcmu"}
     assert session["audio"]["output"]["format"] == {"type": "audio/pcmu"}
-    assert session["audio"]["input"]["turn_detection"] == {"type": "server_vad"}
+    assert session["audio"]["input"]["turn_detection"] == {
+        "type": "server_vad",
+        "create_response": False,
+        "interrupt_response": True,
+    }
     assert session["audio"]["input"]["transcription"] == {"model": "gpt-4o-mini-transcribe"}
     assert session["audio"]["output"]["voice"] == "marin"
     assert session["tool_choice"] == "auto"

@@ -87,7 +87,8 @@ class RealtimeVoiceService:
 
     def session_update(self) -> dict[str, Any]:
         """The `session.update` event that turns a fresh connection into this agent: Twilio's
-        audio format both ways, server-side voice detection, the agent's prompt and tools. The
+        audio format both ways, server-side voice detection (turns only: no automatic response),
+        the agent's prompt and tools. The
         model is chosen in the connection URL."""
         return {
             "type": "session.update",
@@ -97,7 +98,16 @@ class RealtimeVoiceService:
                 "audio": {
                     "input": {
                         "format": dict(AUDIO_FORMAT),
-                        "turn_detection": {"type": "server_vad"},
+                        # The server only detects turns. We create every response ourselves,
+                        # after the input guardrails ran on the transcript (voice_realtime.py);
+                        # interrupt_response makes the server cancel a reply on barge-in (we
+                        # still send `clear` and `truncate`). UNVERIFIED against a live session:
+                        # the two field names, from the API reference as summarised.
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "create_response": False,
+                            "interrupt_response": True,
+                        },
                         "transcription": {"model": self._transcription_model},
                     },
                     "output": {"format": dict(AUDIO_FORMAT), "voice": self._voice_name},

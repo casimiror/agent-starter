@@ -351,6 +351,7 @@ the output format of the model, so nothing is transcoded.
 | `VOICE_REALTIME_MODEL` | `gpt-realtime-2.1` | `gpt-realtime-2.1-mini` is the cheaper option |
 | `VOICE_REALTIME_VOICE` | `marin` | the model's voice; it can't change once the model has spoken in a call |
 | `VOICE_REALTIME_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | transcribes the caller; the transcript feeds the guardrails and the stored history |
+| `VOICE_REALTIME_TRANSCRIPT_WAIT_MS` | `1500` | how long the model's answer waits for the caller's transcript so the input guardrails run first; on timeout it answers anyway |
 
 `VOICE_GREETING` is the first thing the caller hears (the model is told to say it word for word);
 `VOICE_LANGUAGE`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` are for
@@ -367,7 +368,9 @@ WebSocket.
 2. **`start`** binds the session to the conversation (it must exist and be a voice conversation,
    else the call ends), opens `wss://api.openai.com/v1/realtime?model=...` with the key as a bearer
    token and sends `session.update`: `audio/pcmu` both ways, server-side voice detection
-   (`server_vad`), input transcription, the voice, **the same prompt file as the text agent as
+   (`server_vad` with `create_response: false` and `interrupt_response: true`: the server detects
+   turns and cancels a reply on barge-in, but **every response is created by this app**),
+   input transcription, the voice, **the same prompt file as the text agent as
    `instructions`** (nothing is added per channel) and **the same tools** (`name`, `description`
    and the arguments' JSON schema of every tool in `build_assistant_tools`), `tool_choice: auto`.
    Caller audio is dropped until the model confirms the session (`session.updated`), then the
@@ -376,6 +379,14 @@ WebSocket.
    `response.output_audio.delta` goes back as `media`, each followed by a `mark`. Twilio echoes a
    mark when that chunk has *played*, which is how the app knows how much of a reply the caller
    heard (the model produces audio faster than it plays).
+   **The answer.** When the caller's turn ends (`input_audio_buffer.committed`, or `speech_stopped`
+   if it comes first) the app holds the answer, waits up to `VOICE_REALTIME_TRANSCRIPT_WAIT_MS`
+   for `conversation.item.input_audio_transcription.completed` of that item, runs the input
+   guardrails, and only if they pass sends `response.create`. If the transcript is late or the
+   transcription `failed`, it sends `response.create` anyway so the call never stalls. Requests
+   that pile up behind a busy response collapse into one. A `response.create` refused because a
+   response is still active (`conversation_already_has_active_response`) resets the pending flags
+   and is asked again when that response is done.
 4. **Barge-in.** On `input_audio_buffer.speech_started`, if audio is still queued: Twilio `clear`
    (drops it) and `conversation.item.truncate` with `audio_end_ms` = the audio actually played, so
    the model's own memory of what it said matches what the caller heard. The reply's cancellation
@@ -406,10 +417,14 @@ The same classes and canned texts as the text channels (`assistant_guardrails` i
 `app/agents/assistant_agent.py`), applied to transcripts:
 
 - **Input** guardrails run on each caller transcript (`conversation.item.input_audio_transcription.
-  completed`). On a block the in-flight reply is cancelled (`response.cancel`), Twilio's queue is
-  cleared, the reply is truncated, and the model is told, for that one response, to say exactly the
-  guardrail's canned reply (`response.create` with `instructions`, tools off). The blocked turn is
-  stored with the canned reply.
+  completed`) **before the model answers**: the app holds `response.create` until the check passes
+  (cost: a few hundred milliseconds of extra latency per turn, up to
+  `VOICE_REALTIME_TRANSCRIPT_WAIT_MS` when the transcript is slow). On a block no model response is
+  created at all; the model is told, for that one response, to say exactly the guardrail's canned
+  reply (`response.create` with `instructions`, tools off), and the blocked turn is stored with
+  the canned reply. Only when the transcript misses the wait (or fails) does the model answer
+  first; then the check runs when the transcript lands and a block cancels the reply, clears
+  Twilio's queue and truncates it, as an output block does.
 - **Output** guardrails run on the reply's transcript as it streams
   (`response.output_audio_transcript.delta`, only up to the last complete word so a half-written
   URL is not judged), and once more on the final transcript. On a block: cancel, clear, truncate,
@@ -417,12 +432,20 @@ The same classes and canned texts as the text channels (`assistant_guardrails` i
 
 **These are weaker than in text channels, and that is inherent.** In text the output is checked
 before the user sees any of it; here the audio is already on its way. Transcription is also
-asynchronous: the caller's transcript often arrives after the model started answering, and the
-reply's transcript trails its audio. So **a few words can be heard before a block takes effect**,
-and the checks only see what the transcript contains (a price said as "five hundred dollars" has
+asynchronous. The caller's side is covered by the hold above, but the reply's transcript trails
+its audio, so **output guardrails can only cut audio mid-reply: a few words can be heard before a
+block takes effect**, and the checks only see what the transcript contains (a price said as "five hundred dollars" has
 no `$`). The prompt and the tools' design remain the real boundary; treat these as a second line.
 `format_for_speech` (which removes every URL from a reply) does not apply either: a link the model
 says aloud is caught only if its transcript contains a URL outside `ALLOWED_LINKS`.
+
+**Unverified against a live OpenAI session** (written from the API reference, covered by fakes
+only): the `create_response` / `interrupt_response` field names, the events
+`input_audio_buffer.committed`, `input_audio_buffer.speech_stopped` and
+`conversation.item.input_audio_transcription.failed`, and the error code
+`conversation_already_has_active_response`. They are marked `UNVERIFIED` in
+`app/services/voice_realtime.py`. Check them with a real call before relying on the behaviour: if
+no turn-end event arrives, the call would not be answered.
 
 #### Costs
 

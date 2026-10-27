@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     voice_realtime_voice: str = "marin"
     # Transcribes the caller's speech: it feeds the guardrails and the stored history.
     voice_realtime_transcription_model: str = "gpt-4o-mini-transcribe"
+    # How long the model's answer waits for the caller's transcript, so the input guardrails run
+    # before it speaks. Longer: safer, more silence per turn. On timeout it answers anyway.
+    voice_realtime_transcript_wait_ms: int = Field(default=1500, ge=0)
 
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.

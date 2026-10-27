@@ -153,7 +153,10 @@ signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSessi
   uses `websockets`) and runs two directions in one event loop: Twilio events in, model events in.
   State per response: audio sent and played (from Twilio `mark` echoes), transcript so far, whether
   it was cut. Barge-in and guardrail blocks go through one routine (`_clear_playback`): Twilio
-  `clear` plus `conversation.item.truncate` with the played milliseconds.
+  `clear` plus `conversation.item.truncate` with the played milliseconds. The session creates
+  every response itself (`create_response: false`): it holds the answer until the caller's
+  transcript passed the input guardrails (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`, then it answers
+  anyway).
 - `RealtimeVoiceService` (`app/services/realtime_voice_service.py`) is what the session needs from
   the app: `session_update()` (the agent's prompt file via `load_prompt`, its tools converted by
   `realtime_tools`), `check_input` / `check_output` (the lists from `assistant_guardrails`, the
@@ -225,7 +228,7 @@ With `voice` enabled `TWILIO_AUTH_TOKEN` is required; `VOICE_MODE` (`relay`, `ga
 `relay`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` configure it. With
 `VOICE_MODE=realtime` `OPENAI_API_KEY` is required too (the key `LLM_FALLBACKS` openai entries
 use), plus `VOICE_REALTIME_PROVIDER` (`openai`), `VOICE_REALTIME_MODEL`, `VOICE_REALTIME_VOICE` and
-`VOICE_REALTIME_TRANSCRIPTION_MODEL`.
+`VOICE_REALTIME_TRANSCRIPTION_MODEL` and `VOICE_REALTIME_TRANSCRIPT_WAIT_MS`.
 `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
 

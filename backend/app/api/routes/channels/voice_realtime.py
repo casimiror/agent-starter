@@ -59,7 +59,12 @@ async def stream_socket(
                 return message
 
     session = RealtimeSession(
-        service, connector, receive, websocket.send_json, settings.voice_max_call_seconds
+        service,
+        connector,
+        receive,
+        websocket.send_json,
+        settings.voice_max_call_seconds,
+        settings.voice_realtime_transcript_wait_ms / 1000,
     )
     try:
         await session.run()
