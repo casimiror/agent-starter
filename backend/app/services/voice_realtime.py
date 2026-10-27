@@ -189,12 +189,14 @@ class RealtimeSession:
     async def _shutdown(self) -> None:
         for task in self._tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        # First, before anything that awaits for long: if the server cancels this handler (a
+        # shutdown), the billed model session must still be closed.
         if self._conn is not None:
             try:
                 await self._conn.close()
             except Exception as exc:  # already closed by the peer
                 log.debug("voice realtime close failed", extra={"error": type(exc).__name__})
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         # Whatever was still being said was heard only as far as it played.
         for resp in list(self._responses.values()):
             if not resp.settled:

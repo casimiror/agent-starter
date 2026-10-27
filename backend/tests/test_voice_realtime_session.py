@@ -622,6 +622,15 @@ async def test_the_model_closing_ends_the_call():
 
 
 @scenario
+async def test_the_model_session_is_closed_even_when_the_handler_is_cancelled():
+    h = Call()
+    await h.open()
+    h.task.cancel()
+    await asyncio.gather(h.task, return_exceptions=True)
+    assert h.model.closed
+
+
+@scenario
 async def test_twilio_disconnecting_closes_the_model():
     h = Call()
     await h.open()
