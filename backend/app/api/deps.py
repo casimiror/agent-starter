@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agents.assistant_agent import build_assistant_agent
+from app.agents.assistant_agent import ASSISTANT_PROMPT, assistant_guardrails, build_assistant_agent
+from app.agents.builder import load_prompt
+from app.clients.realtime import OpenAIRealtimeConnector
 from app.core.config import get_settings
 from app.core.dedupe import RecentIds
 from app.core.llm import build_chat_models
@@ -21,6 +23,7 @@ from app.repositories.feedback_repository import FeedbackRepository
 from app.services.channel_conversations import ChannelConversations
 from app.services.chat_service import ChatService
 from app.services.feedback_service import FeedbackService
+from app.services.realtime_voice_service import RealtimeVoiceService
 from app.services.voice_service import VoiceService
 from app.services.whatsapp_service import WhatsAppService
 from app.tools.registry import ToolDeps, build_assistant_tools
@@ -104,6 +107,35 @@ def get_voice_service() -> VoiceService:
         settings.rate_limit_voice,
         settings.voice_link_phrase,
         settings.voice_max_call_seconds,
+    )
+
+
+@lru_cache
+def get_realtime_connector() -> OpenAIRealtimeConnector:
+    """Opens the connection to the speech-to-speech model. Tests replace it with a fake."""
+    settings = get_settings()
+    return OpenAIRealtimeConnector(settings.openai_api_key, settings.voice_realtime_model)
+
+
+@lru_cache
+def get_realtime_voice_service() -> RealtimeVoiceService:
+    """The assistant's prompt, tools and guardrails for the realtime voice mode: the same
+    definitions the text agent is built from (`get_chat_service`)."""
+    settings = get_settings()
+    sessions = get_sessions()
+    conversations = ConversationRepository(ConversationDAO(sessions), MessageDAO(sessions))
+    input_guardrails, output_guardrails = assistant_guardrails(settings)
+    return RealtimeVoiceService(
+        get_voice_service(),
+        conversations,
+        build_assistant_tools(get_tool_deps()),
+        load_prompt(ASSISTANT_PROMPT),
+        input_guardrails,
+        output_guardrails,
+        model=settings.voice_realtime_model,
+        voice_name=settings.voice_realtime_voice,
+        transcription_model=settings.voice_realtime_transcription_model,
+        greeting=settings.voice_greeting,
     )
 
 
