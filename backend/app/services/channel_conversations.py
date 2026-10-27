@@ -62,6 +62,13 @@ class ChannelConversations:
         found = self._conversations.get(conversation_id)
         return found if found and found.channel == channel else None
 
+    def record_heard(self, conversation_id: UUID, heard: str) -> None:
+        """A spoken reply was cut short: keep only what the caller heard as the assistant's
+        message, so the next turn does not assume the whole reply was said. When the reply is not
+        stored yet (the last message is not the assistant's), store the heard part instead."""
+        if not self._conversations.replace_last_assistant(conversation_id, heard):
+            self._conversations.append(conversation_id, "assistant", heard)
+
     @contextmanager
     def lock(self, visitor_id: UUID) -> Iterator[None]:
         """Hold around `resolve` + the turn, so two quick messages from one sender don't both

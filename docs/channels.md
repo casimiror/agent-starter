@@ -270,15 +270,20 @@ opens the WebSocket:
    and is sent as `{"type":"text","token":<reply>,"last":true}`. A failed turn sends a spoken
    apology. One turn at a time per call (a lock), so a caller who speaks twice gets two answers in
    order, never two concurrent turns. Observability is flushed after each turn.
-4. `interrupt`, `dtmf`, `error`: logged (never the digit or the words), nothing sent back.
+4. `interrupt` (see below), `dtmf`, `error`: logged (never the digit or the words), nothing sent
+   back.
 5. After `VOICE_MAX_CALL_SECONDS` the app sends `{"type":"end"}`; Twilio then closes the socket and
    calls the `action` URL, which answers `<Hangup/>` (`POST /api/channels/voice/relay/action`,
    signed; it logs `SessionStatus`, `SessionDuration` and `ErrorCode`).
 
-**Interruptions do not trim history.** When the caller talks over the reply Twilio sends
-`utteranceUntilInterrupt`, the part that was actually spoken. The stored assistant message keeps the
-**whole** reply, so the history the model sees can hold words the caller never heard. Trimming it
-would mean rewriting a stored message after the fact; it is not done.
+**Interruptions trim history.** When the caller talks over the reply Twilio sends
+`utteranceUntilInterrupt`, the part that was actually spoken. `RelaySession` replaces the stored
+assistant message with it (`ConversationRepository.replace_last_assistant`), so the model does not
+assume the caller heard the whole reply; if the reply is not stored yet, the heard part is stored
+instead, and an empty one becomes `…`. It acts once per reply sent (an interrupt during the
+greeting changes nothing) and not while a turn is running. Unverified against real Twilio: that
+`utteranceUntilInterrupt` always arrives before the next `prompt`. `gather` has no such text, so
+there the stored reply stays whole.
 
 #### `gather`
 

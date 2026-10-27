@@ -127,7 +127,7 @@ without a trailing slash). `VoiceService` (`app/services/voice_service.py`) is w
 3. `relay`: `RelaySession` (`app/services/voice_relay.py`) handles Twilio's WebSocket messages with
    no socket code: `setup` binds the session to the conversation (looked up with
    `ChannelConversations.find`, which also checks the channel), a final `prompt` runs a turn under
-   a per-call lock and yields one `text` message, `interrupt`/`dtmf`/`error` are logged, and past
+   a per-call lock and yields one `text` message, `interrupt` rewrites the stored reply to what the caller heard (`dtmf`/`error` are logged), and past
    `VOICE_MAX_CALL_SECONDS` it yields `end`. The route owns the socket and runs a prompt as a task
    so interrupts are still read during a turn.
 4. `gather`: `POST /api/channels/voice/gather?c=<id>` runs the turn inside the webhook and answers

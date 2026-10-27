@@ -158,3 +158,23 @@ def test_turn_and_send_locks_are_independent_and_cleaned_up():
         with service.send_lock(visitor):  # hand over hand: both held at once
             assert len(service._locks) == 2
     assert service._locks == {}
+
+
+def test_record_heard_replaces_the_last_assistant_message_or_stores_a_new_one():
+    class Repo(FakeConversations):
+        def __init__(self, replaced: bool) -> None:
+            super().__init__()
+            self.replaced, self.calls, self.appended = replaced, [], []
+
+        def replace_last_assistant(self, conversation_id, content):
+            self.calls.append(content)
+            return self.replaced
+
+        def append(self, conversation_id, role, content):
+            self.appended.append((role, content))
+
+    kept, missing = Repo(True), Repo(False)
+    _service(kept).record_heard(uuid4(), "heard")
+    _service(missing).record_heard(uuid4(), "heard")
+    assert kept.calls == ["heard"] and kept.appended == []
+    assert missing.appended == [("assistant", "heard")]

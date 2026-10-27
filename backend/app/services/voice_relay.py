@@ -19,8 +19,9 @@ class RelaySession:
     socket code here (the route owns it), so it is tested with plain dicts.
 
     Messages: `setup` binds the session to the conversation created when the call came in;
-    `prompt` is a final transcript and runs one turn; `interrupt`, `dtmf` and `error` are only
-    logged. Twilio's `setup.from` (the caller's number) is never read."""
+    `prompt` is a final transcript and runs one turn; `interrupt` trims the stored reply to what
+    the caller heard; `dtmf` and `error` are only logged. Twilio's `setup.from` (the caller's
+    number) is never read."""
 
     def __init__(
         self,
@@ -38,6 +39,8 @@ class RelaySession:
         self.call: VoiceCall | None = None
         self.call_sid = ""
         self.ended = False
+        # A reply was sent and no interrupt has trimmed it yet (the greeting is not a reply).
+        self._unheard_reply = False
 
     @property
     def expired(self) -> bool:
@@ -67,12 +70,11 @@ class RelaySession:
         if kind == "prompt":
             return await self._prompt(message)
         if kind == "interrupt":
-            # The stored assistant message keeps the whole reply: it is not trimmed to what the
-            # caller heard (`utteranceUntilInterrupt`), so history may be longer than the call.
             log.info(
                 "voice reply interrupted",
                 extra={**self._fields(), "after_ms": message.get("durationUntilInterruptMs")},
             )
+            await self._interrupt(message)
         elif kind == "dtmf":
             # Never the digit itself: keypad input can be an account or card number.
             log.info("voice dtmf received", extra=self._fields())
@@ -107,6 +109,18 @@ class RelaySession:
         log.info("voice relay connected", extra=self._fields())
         return []
 
+    async def _interrupt(self, message: dict[str, Any]) -> None:
+        """Keep in the history only what the caller heard of the last reply
+        (`utteranceUntilInterrupt`). Acts once per reply sent, and not while a turn is running:
+        then the last stored assistant message may already be a newer reply (Twilio sends the
+        interrupt before the next prompt, so this is the rare case)."""
+        if self.call is None or not self._unheard_reply or self._turn.locked():
+            return
+        self._unheard_reply = False
+        # "…" when nothing was heard: an empty assistant message would break some providers.
+        heard = str(message.get("utteranceUntilInterrupt") or "").strip() or "…"
+        await asyncio.to_thread(self._voice.record_heard, self.call, heard, self.call_sid)
+
     async def _prompt(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         # With partial prompts a transcript may arrive in pieces; only the final one is a turn.
         if message.get("last", True) is not True:
@@ -120,4 +134,5 @@ class RelaySession:
             if self.expired:
                 return self.end()
             reply = await asyncio.to_thread(self._voice.answer, self.call, text, self.call_sid)
+            self._unheard_reply = True  # a later interrupt may cut this reply short
         return [{"type": "text", "token": reply, "last": True}]

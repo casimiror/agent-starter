@@ -32,6 +32,17 @@ def make_settings(**values) -> Settings:
 class FakeConversations:
     def __init__(self) -> None:
         self.rows: dict = {}
+        self.messages: list[list] = []  # [conversation_id, role, content], oldest first
+
+    def append(self, conversation_id, role, content):
+        self.messages.append([conversation_id, role, content])
+
+    def replace_last_assistant(self, conversation_id, content):
+        mine = [m for m in self.messages if m[0] == conversation_id]
+        if not mine or mine[-1][1] != "assistant":
+            return False
+        mine[-1][2] = content
+        return True
 
     def get(self, conversation_id):
         return self.rows.get(conversation_id)
@@ -55,6 +66,7 @@ class FakeChat:
         self.reply = reply
         self.error = error
         self.delay = delay
+        self.store = None  # set by make_voice
         self.calls: list[tuple] = []
         self.max_concurrent = 0
         self._running = 0
@@ -69,6 +81,9 @@ class FakeChat:
             time.sleep(self.delay)
             if self.error:
                 raise self.error
+            if self.store is not None:  # persist like ChatService does, after a good turn
+                self.store.append(conversation_id, "user", user_text)
+                self.store.append(conversation_id, "assistant", self.reply)
             return SimpleNamespace(reply=self.reply)
         finally:
             with self._guard:
@@ -92,6 +107,7 @@ def make_voice(chat=None, hit=None, rate_limit="5/minute", max_call_seconds=600,
     repo = FakeConversations()
     channels = ChannelConversations(repo, "s3cret", timedelta(hours=24), lambda: NOW)
     chat = chat or FakeChat()
+    chat.store = repo
     clock = clock or Clock()
     flushed: list[int] = []
     service = VoiceService(
