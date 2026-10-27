@@ -68,9 +68,11 @@ class FakeConversations:
             id=uuid4(), visitor_id=None, created_at="2026-10-24T00:00:00Z"
         )
         self.created_with: list = []
+        self.channels: list = []
 
-    def get_or_create(self, conversation_id, visitor_id=None):
+    def get_or_create(self, conversation_id, visitor_id=None, channel="web"):
         self.created_with.append(visitor_id)
+        self.channels.append(channel)
         return self.conversation
 
     def recent_messages(self, conversation_id, limit):
@@ -102,6 +104,29 @@ def test_chat_service_passes_visitor_as_langfuse_user(monkeypatch):
     assert conversations.created_with == [visitor_id]
     assert calls[0]["user_id"] == str(visitor_id)
     assert calls[0]["session_id"] == str(conversations.conversation.id)
+
+
+def test_chat_service_stores_the_channel_and_tags_the_trace(monkeypatch):
+    monkeypatch.setattr(observability, "_client", FakeLangfuse())
+    calls = _record_propagation(monkeypatch)
+    conversations = FakeConversations()
+    conversations.conversation.channel = "whatsapp"
+
+    ChatService(conversations, FakeAgent(), 10).handle_turn(None, "hi", uuid4(), "whatsapp")
+
+    assert conversations.channels == ["whatsapp"]
+    assert calls[0]["tags"] == ["channel:whatsapp"]
+
+
+def test_web_is_the_default_channel(monkeypatch):
+    monkeypatch.setattr(observability, "_client", FakeLangfuse())
+    calls = _record_propagation(monkeypatch)
+    conversations = FakeConversations()
+
+    ChatService(conversations, FakeAgent(), 10).handle_turn(None, "hi")
+
+    assert conversations.channels == ["web"]
+    assert calls[0]["tags"] == ["channel:web"]
 
 
 def test_stored_visitor_wins_over_request(monkeypatch):

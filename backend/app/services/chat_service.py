@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.graph.state import CompiledStateGraph
 
 from app.core.observability import trace_turn
-from app.domain.models import Message
+from app.domain.models import Channel, Message
 from app.repositories.conversation_repository import ConversationRepository
 
 log = logging.getLogger("app.chat")
@@ -56,16 +56,23 @@ class ChatService:
         self._primary_model = primary_model  # a reply from any other model came from a fallback
 
     def handle_turn(
-        self, conversation_id: UUID | None, user_text: str, visitor_id: UUID | None = None
+        self,
+        conversation_id: UUID | None,
+        user_text: str,
+        visitor_id: UUID | None = None,
+        channel: Channel = "web",
     ) -> TurnResult:
-        conversation = self._conversations.get_or_create(conversation_id, visitor_id)
+        # The channel is stored and traced only: the agent and its prompt never see it.
+        conversation = self._conversations.get_or_create(conversation_id, visitor_id, channel)
         history = self._conversations.recent_messages(conversation.id, self._history_limit)
 
         # The stored visitor wins, so one conversation is never split across Langfuse users.
         visitor = conversation.visitor_id or visitor_id
         user_id = str(visitor) if visitor else None
         started = time.perf_counter()
-        with trace_turn(str(conversation.id), user_id, user_text) as trace:
+        # An existing conversation keeps its own channel, so tag with the stored one.
+        tags = [f"channel:{conversation.channel}"]
+        with trace_turn(str(conversation.id), user_id, user_text, tags) as trace:
             config = {**trace.config, "configurable": {"conversation_id": str(conversation.id)}}
             messages = [*_to_langchain(history), HumanMessage(user_text)]
             state = self._agent.invoke({"messages": messages}, config)
@@ -86,6 +93,7 @@ class ChatService:
             "chat turn",
             extra={
                 "conversation_id": str(conversation.id),
+                "channel": conversation.channel,
                 "history_messages": len(history),
                 "tools_called": tools_called,
                 "blocked_by": state.get("blocked_by"),
