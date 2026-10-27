@@ -87,5 +87,20 @@ services:
     depends_on:
       - api
 
+  # Public https URL in front of `api` so a provider's webhook (Twilio, ...) can reach a laptop:
+  # `make tunnel`, needs NGROK_AUTHTOKEN and NGROK_DOMAIN in .env. Deliberately not `env_file:
+  # .env`: the tunnel must not receive the app's secrets. The image's default config makes the
+  # inspector listen on 0.0.0.0:4040 (localhost:4040 shows and replays every request).
+  ngrok:
+    profiles: ["tunnel"]
+    image: ngrok/ngrok:3.39.13-alpine
+    environment:
+      - NGROK_AUTHTOKEN
+    command: ["http", "--url=${NGROK_DOMAIN:-}", "api:8000"]
+    ports:
+      - "4040:4040"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
