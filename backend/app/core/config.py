@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # A sender's conversation is reused while their last message is newer than this.
     conversation_window_hours: float = 24
 
+    # WhatsApp through Twilio (docs/channels.md). Required when CHANNELS includes whatsapp.
+    # The auth token also signs the webhook calls we verify.
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    # Per sender (anonymous visitor id), not per IP: every webhook call comes from Twilio.
+    rate_limit_whatsapp: str = "10/minute"
+
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.
     log_level: str = "INFO"
@@ -123,14 +130,16 @@ class Settings(BaseSettings):
         """Fail at startup, not on the first message, when a channel can't work."""
         if not self.extra_channels:
             return
-        missing = [
-            name
-            for name, value in (
-                ("CHANNEL_ID_SECRET", self.channel_id_secret),
-                ("PUBLIC_BASE_URL", self.public_base_url),
-            )
-            if not value
+        required = [
+            ("CHANNEL_ID_SECRET", self.channel_id_secret),
+            ("PUBLIC_BASE_URL", self.public_base_url),
         ]
+        if "whatsapp" in self.channels:
+            required += [
+                ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
+                ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+            ]
+        missing = [name for name, value in required if not value]
         if missing:
             raise RuntimeError(
                 f"CHANNELS enables {', '.join(self.extra_channels)} but {' and '.join(missing)} "
