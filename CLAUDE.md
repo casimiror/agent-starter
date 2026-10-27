@@ -12,6 +12,7 @@ Read the relevant document before changing that area. Keep it current in the sam
 | --- | --- |
 | Backend layers, chat turn, tools, guardrails, observability | `docs/architecture/backend.md` |
 | The agent graph; changing or adding agents | `backend/app/agents/README.md` |
+| Channels beyond the web UI (WhatsApp, voice): shared pieces, identity, local tunnel | `docs/channels.md` |
 | Frontend structure and patterns | `docs/architecture/frontend.md` |
 | UI design: tokens, class naming, accessibility | `docs/design/frontend.md` |
 | Schema, migrations, RLS, local vs Supabase connections | `docs/database.md` |
