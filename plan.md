@@ -34,6 +34,10 @@ budget in hours).>
   <project-specific ones>.
 - Conversation, messages and feedback in Postgres (Supabase); Langfuse tracing per turn; rate limit
   per IP on `/api/chat`.
+- Optional channels beyond the web UI, off by default (`CHANNELS`, `docs/channels.md`): WhatsApp
+  through Twilio (text only, replies sent through the REST API from a background task, so it needs
+  a host where the process keeps running; sandbox or an approved sender, no outbound templates).
+  Delete this line if the project only has the web UI.
 
 **Out (and why)**
 - <what is deliberately not built, and the reason>
