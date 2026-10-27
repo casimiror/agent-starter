@@ -3,7 +3,7 @@
 or the ngrok tunnel rewrites the scheme and host we see)."""
 
 import logging
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl
 
 from fastapi import HTTPException, Request, status
 from twilio.request_validator import RequestValidator
@@ -19,11 +19,6 @@ MAX_BODY_BYTES = 64 * 1024
 def public_url(settings: Settings, path: str) -> str:
     """The https URL Twilio calls for `path` (which may carry a query string)."""
     return settings.public_base_url.rstrip("/") + path
-
-
-def websocket_url(settings: Settings, path: str) -> str:
-    """The wss URL for `path`: same host as PUBLIC_BASE_URL."""
-    return "wss://" + urlparse(settings.public_base_url).netloc + path
 
 
 async def read_body(request: Request) -> bytes:
