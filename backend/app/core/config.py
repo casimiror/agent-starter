@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
+import limits
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -170,6 +171,19 @@ class Settings(BaseSettings):
             required.append(("TWILIO_AUTH_TOKEN", self.twilio_auth_token))
             if self.voice_mode == "realtime":
                 required.append(("OPENAI_API_KEY", self.openai_api_key))
+        # A typo in a per-sender limit would otherwise fail on every message, not at startup.
+        limit_settings = []
+        if "whatsapp" in self.channels:
+            limit_settings.append(("RATE_LIMIT_WHATSAPP", self.rate_limit_whatsapp))
+        if "voice" in self.channels:
+            limit_settings.append(("RATE_LIMIT_VOICE", self.rate_limit_voice))
+        for name, value in limit_settings:
+            try:
+                limits.parse(value)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{name} is not a valid limit (e.g. 10/minute): set it in .env"
+                ) from exc
         missing = list(dict.fromkeys(name for name, value in required if not value))
         if missing:
             raise RuntimeError(
