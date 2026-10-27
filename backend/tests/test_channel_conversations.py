@@ -20,6 +20,9 @@ class FakeConversations:
     def latest_for_visitor(self, visitor_id, channel):
         return self.latest
 
+    def get(self, conversation_id):
+        return self.latest if self.latest and self.latest.id == conversation_id else None
+
     def last_activity(self, conversation_id):
         # Mirrors the repository: last message, else the conversation's creation time.
         return self.activity or (self.latest.created_at if self.latest else None)
@@ -81,6 +84,27 @@ def test_without_messages_the_creation_time_counts():
     assert _service(fresh).resolve(uuid4(), "whatsapp") == reused.id
     _service(stale).resolve(uuid4(), "whatsapp")
     assert len(stale.created) == 1
+
+
+def test_start_always_opens_a_new_conversation_even_inside_the_window():
+    conversations = FakeConversations()
+    latest = _existing(conversations)
+    visitor = uuid4()
+
+    started = _service(conversations).start(visitor, "voice")
+
+    assert started != latest.id
+    assert conversations.created == [(None, visitor, "voice")]
+
+
+def test_find_returns_only_an_existing_conversation_of_that_channel():
+    conversations = FakeConversations()
+    existing = _existing(conversations)  # a whatsapp conversation
+    service = _service(conversations)
+
+    assert service.find(existing.id, "whatsapp") == existing
+    assert service.find(existing.id, "voice") is None  # right id, wrong channel
+    assert service.find(uuid4(), "whatsapp") is None  # unknown id
 
 
 def test_a_visitor_without_conversations_gets_a_new_one_on_that_channel():
