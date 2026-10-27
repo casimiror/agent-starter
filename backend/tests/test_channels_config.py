@@ -58,7 +58,10 @@ def test_channel_settings_are_not_needed_for_web_only():
 
 def test_a_fully_configured_channel_passes():
     _settings(
-        channels=["voice"], channel_id_secret="s", public_base_url="https://x.example"
+        channels=["voice"],
+        channel_id_secret="s",
+        public_base_url="https://x.example",
+        twilio_auth_token="t",
     ).check_channels()
 
 
@@ -135,9 +138,12 @@ def test_whatsapp_needs_the_twilio_credentials():
     ).check_channels()
 
 
-def test_voice_alone_does_not_need_twilio_whatsapp_credentials():
+def test_voice_alone_does_not_need_the_account_sid():
     _settings(
-        channels=["voice"], channel_id_secret="s", public_base_url="https://x.example"
+        channels=["voice"],
+        channel_id_secret="s",
+        public_base_url="https://x.example",
+        twilio_auth_token="t",
     ).check_channels()
 
 

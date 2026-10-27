@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
-from app.domain.models import Channel
+from app.domain.models import Channel, Conversation
 from app.repositories.conversation_repository import ConversationRepository
 
 # Namespace for the visitor ids; any fixed UUID works, the secret is what protects the sender.
@@ -49,6 +49,18 @@ class ChannelConversations:
             if last and self._now() - last < self._window:
                 return latest.id
         return self._conversations.get_or_create(None, visitor_id, channel).id
+
+    def start(self, visitor_id: UUID, channel: Channel) -> UUID:
+        """Always a new conversation, for channels where the unit is not a time window: a phone
+        call is one conversation, however soon the same caller rings again."""
+        return self._conversations.get_or_create(None, visitor_id, channel).id
+
+    def find(self, conversation_id: UUID, channel: Channel) -> Conversation | None:
+        """An existing conversation of this channel, else None. For ids that come back from the
+        provider (a URL, a TwiML parameter): never trust that they point at a real, right-channel
+        conversation, because `handle_turn` would silently open a new one for an unknown id."""
+        found = self._conversations.get(conversation_id)
+        return found if found and found.channel == channel else None
 
     @contextmanager
     def lock(self, visitor_id: UUID) -> Iterator[None]:

@@ -1,5 +1,7 @@
 """The only place where concrete classes are wired together."""
 
+import time
+from collections.abc import Callable
 from datetime import timedelta
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -19,6 +21,7 @@ from app.repositories.feedback_repository import FeedbackRepository
 from app.services.channel_conversations import ChannelConversations
 from app.services.chat_service import ChatService
 from app.services.feedback_service import FeedbackService
+from app.services.voice_service import VoiceService
 from app.services.whatsapp_service import WhatsAppService
 from app.tools.registry import ToolDeps, build_assistant_tools
 
@@ -90,6 +93,23 @@ def get_whatsapp_service() -> WhatsAppService:
 def get_whatsapp_dedupe() -> RecentIds:
     """Twilio retries seen in the last minutes. Per process (docs/channels.md)."""
     return RecentIds()
+
+
+@lru_cache
+def get_voice_service() -> VoiceService:
+    settings = get_settings()
+    return VoiceService(
+        get_channel_conversations(),
+        get_chat_service(),
+        settings.rate_limit_voice,
+        settings.voice_link_phrase,
+        settings.voice_max_call_seconds,
+    )
+
+
+def get_relay_clock() -> Callable[[], float]:
+    """The clock a ConversationRelay session measures the call with; tests replace it."""
+    return time.monotonic
 
 
 @lru_cache

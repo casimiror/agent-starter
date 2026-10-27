@@ -25,6 +25,7 @@ def _lazy(module: str) -> RouterLoader:
 # channel name -> loader of its router. A channel PR adds its line here.
 CHANNEL_ROUTERS: dict[str, RouterLoader] = {
     "whatsapp": _lazy("app.api.routes.channels.whatsapp"),
+    "voice": _lazy("app.api.routes.channels.voice"),
 }
 
 

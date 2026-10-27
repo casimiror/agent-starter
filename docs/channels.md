@@ -6,8 +6,8 @@ in, takes the reply out and says which conversation they belong to. The code of 
 in this template and is tested in CI, but every channel is **off by default** and enabled by
 configuration.
 
-Status: the shared foundation and the WhatsApp channel are in place; the voice channel comes in a
-later change.
+Status: the shared foundation, the WhatsApp channel and the voice channel (relay and gather modes)
+are in place; the `realtime` voice mode comes in a later change.
 
 ## Enabling a channel
 
@@ -173,4 +173,130 @@ several messages. The cost is one extra Twilio API call per message.
 
 ## Voice
 
-Coming in a later change.
+People phone a Twilio number and talk to the same agent. Twilio's "A call comes in" webhook always
+lands on `POST /api/channels/voice/incoming`; `VOICE_MODE` decides how the rest of the call works.
+
+| `VOICE_MODE` | Who listens and speaks | The app talks to Twilio over | Needs | Limits |
+| --- | --- | --- | --- | --- |
+| `relay` (default, recommended) | Twilio ConversationRelay: speech-to-text and text-to-speech, with interruption | a WebSocket (JSON text) | a host that keeps WebSockets open; Voice AI addendum accepted in the console | not on Vercel functions |
+| `gather` | Twilio `<Gather input="speech">` and `<Say>` | one HTTP webhook per turn | nothing but HTTP, so it works on serverless | the whole turn must fit in Twilio's ~15 s webhook timeout; plainer voice, less natural pauses |
+| `realtime` | a speech-to-speech model (OpenAI Realtime) over Twilio Media Streams | a WebSocket (audio) | coming in a later change | |
+
+Because Twilio does the speech in `relay` and `gather`, the agent only sees text: Claude and any
+other text-only LLM work unchanged. An unknown `VOICE_MODE` stops the app at startup. The routes of
+the modes that are not selected answer 404.
+
+Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`, `voice_gather.py`;
+`VoiceService` (`app/services/voice_service.py`), `RelaySession` (`voice_relay.py`), TwiML builders
+(`voice_twiml.py`) and the speech formatter (`voice_format.py`).
+
+### Setup
+
+1. In the Twilio console buy (or use) a phone number with **Voice**. A trial account can only call
+   verified numbers: verify yours in the console first.
+2. Number settings > **A call comes in**: Webhook, `<PUBLIC_BASE_URL>/api/channels/voice/incoming`,
+   method **HTTP POST**.
+3. `relay` only: in the console's Voice settings accept the "Predictive and Generative AI/ML
+   Features Addendum". ConversationRelay requires it.
+4. `.env`: `CHANNELS=web,voice`, `CHANNEL_ID_SECRET`, `PUBLIC_BASE_URL`, `TWILIO_AUTH_TOKEN` (voice
+   needs no account SID), and the voice variables below. Without the first four the app refuses to
+   start.
+5. Locally `make tunnel` (see above). ngrok carries `wss://` too, so the relay WebSocket works
+   through the same domain. Then call the number and watch the requests in
+   http://localhost:4040.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `VOICE_MODE` | `relay` | `relay` or `gather` |
+| `VOICE_LANGUAGE` | `en-US` | speech recognition and voice language (BCP 47) |
+| `VOICE_GREETING` | "Hello, thanks for calling. How can I help you today?" | first thing the caller hears |
+| `VOICE_LINK_PHRASE` | "I can't read links aloud; you'll find it on our website." | said instead of any URL |
+| `RATE_LIMIT_VOICE` | `5/minute` | calls per caller (anonymous visitor id) |
+| `VOICE_MAX_CALL_SECONDS` | `600` | longest call |
+| `VOICE_TTS_PROVIDER` | `ElevenLabs` | relay only: `Google`, `Amazon` or `ElevenLabs` |
+| `VOICE_VOICE` | empty | relay only: the provider's voice name; empty is its default |
+| `VOICE_TRANSCRIPTION_PROVIDER` | `Deepgram` | relay only: `Google` or `Deepgram` |
+
+Pick a TTS voice that exists for the provider and language: Twilio ends the session on an invalid
+provider/voice combination.
+
+### What happens when a call comes in
+
+`POST /api/channels/voice/incoming` (form-encoded by Twilio), in order: body over 64 KB is `413`;
+`X-Twilio-Signature` checked against `PUBLIC_BASE_URL + path`, invalid is `403`; no `CallSid` is
+`400`; `hit_sender(RATE_LIMIT_VOICE, "voice", visitor_id)`, over the limit the caller hears a short
+message and `<Hangup/>`; otherwise a **new** conversation is created and the mode's TwiML answers.
+
+**One conversation per call.** WhatsApp reuses a sender's conversation for 24 hours because a chat
+has no end; a call does, and the next call should not inherit the last one's context (or its
+history, which is sent to the model). So every call opens a conversation (`channel = 'voice'`) with
+`ChannelConversations.start`. A caller with a hidden number (`From` empty or `anonymous`) is keyed
+by the call's own SID so such callers do not share one visitor and one limit.
+
+#### `relay`
+
+`/incoming` answers `<Connect action=".../relay/action"><ConversationRelay url="wss://<host>/api/
+channels/voice/relay/ws" welcomeGreeting language ttsProvider transcriptionProvider
+interruptible="any">` with two `<Parameter>`s, `visitor_id` and `conversation_id`. Twilio then
+opens the WebSocket:
+
+1. **Handshake.** Twilio signs the `wss://` URL (no body) in `X-Twilio-Signature`. The route
+   verifies it with `RequestValidator` against the URL built from `PUBLIC_BASE_URL`, accepting the
+   URL with or without a trailing `/` (the docs do not say which form is signed), and closes with
+   code 1008 (policy violation) before accepting otherwise.
+2. `setup`: the two parameters bind the session to the conversation; it must exist and be a voice
+   conversation, else the session ends. `from`, `callerName` and the other caller fields are ignored.
+3. `prompt`: acted on only when `last` is true. The turn runs in a threadpool
+   (`ChatService.handle_turn(..., channel="voice")`), the reply goes through `format_for_speech`
+   and is sent as `{"type":"text","token":<reply>,"last":true}`. A failed turn sends a spoken
+   apology. One turn at a time per call (a lock), so a caller who speaks twice gets two answers in
+   order, never two concurrent turns. Observability is flushed after each turn.
+4. `interrupt`, `dtmf`, `error`: logged (never the digit or the words), nothing sent back.
+5. After `VOICE_MAX_CALL_SECONDS` the app sends `{"type":"end"}`; Twilio then closes the socket and
+   calls the `action` URL, which answers `<Hangup/>` (`POST /api/channels/voice/relay/action`,
+   signed; it logs `SessionStatus`, `SessionDuration` and `ErrorCode`).
+
+**Interruptions do not trim history.** When the caller talks over the reply Twilio sends
+`utteranceUntilInterrupt`, the part that was actually spoken. The stored assistant message keeps the
+**whole** reply, so the history the model sees can hold words the caller never heard. Trimming it
+would mean rewriting a stored message after the fact; it is not done.
+
+#### `gather`
+
+`/incoming` answers `<Gather input="speech" action=".../gather?c=<conversation_id>" method="POST"
+speechTimeout="auto" language=...><Say>greeting</Say></Gather>` followed by a `<Redirect>` to the
+same URL for when nothing is said. `POST /api/channels/voice/gather` (signed; the signature covers
+the **full URL including `?c=`**, so the route validates the exact URL it emitted) reads
+`SpeechResult`, runs the turn inside the request and answers `<Gather><Say>reply</Say></Gather>`
+again, so the caller can talk over the reply (barge-in). The conversation id travels in the query
+string (a UUID, not personal data) and must be an existing voice conversation, otherwise the call
+ends politely and nothing is opened. Silence is re-prompted once (`&r=1`), the second silence hangs
+up. The call also ends once it is older than `VOICE_MAX_CALL_SECONDS` (checked per turn, with the
+conversation's creation time).
+
+### Speech formatting
+
+`format_for_speech` runs after the output guardrails and only ever removes: Markdown markers go,
+links keep their text, headings and list items become sentences, and **every URL is removed** and
+replaced, once at the end of the reply, by `VOICE_LINK_PHRASE`. It cannot invent a URL. In `gather`
+a reply is also cut to 3500 characters at a sentence boundary (`<Say>` rejects more than 4096).
+
+### Limits
+
+- `relay` needs a process that keeps a WebSocket open for the whole call (a container, a VM): not
+  Vercel functions. `gather` needs only HTTP.
+- `gather` is bound by Twilio's ~15 s webhook timeout: a turn with several tool calls or a fallback
+  model can exceed it, and then the caller hears Twilio's error. There is no way around it in this
+  mode; use `relay`.
+- Interruptions do not trim the stored reply (above).
+- The per-call lock, the per-visitor limit counters (with `memory://`) and the conversation checks
+  are per process, like WhatsApp's. A call handled by several instances still works (each turn
+  reads the conversation from the database); the cost is a looser limit.
+- If a `relay` socket drops, Twilio does not reconnect: the call ends. A turn answered after the
+  caller hung up is simply lost.
+- The caller's number (`From`, `setup.from`, `callerName`) is only fed to
+  `ChannelConversations.visitor_id`. It is never stored, logged, sent to Langfuse or put in TwiML;
+  logs carry `visitor_id`, `CallSid`, `conversation_id` and Twilio error codes.
+- Not verified against the live Twilio service yet: the exact URL form Twilio signs on the
+  WebSocket handshake (both forms are accepted), and ConversationRelay's behaviour with each
+  TTS/transcription provider and language.

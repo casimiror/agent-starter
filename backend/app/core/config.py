@@ -84,6 +84,22 @@ class Settings(BaseSettings):
     # Per sender (anonymous visitor id), not per IP: every webhook call comes from Twilio.
     rate_limit_whatsapp: str = "10/minute"
 
+    # Voice through Twilio (docs/channels.md). Required when CHANNELS includes voice (plus
+    # TWILIO_AUTH_TOKEN, which signs the webhooks and the WebSocket handshake). The mode picks the
+    # implementation; an unknown one stops the app at startup. PR "realtime" adds a mode here.
+    voice_mode: Literal["relay", "gather"] = "relay"
+    voice_language: str = "en-US"
+    voice_greeting: str = "Hello, thanks for calling. How can I help you today?"
+    # Spoken instead of any URL in a reply: a URL can't be read aloud usefully.
+    voice_link_phrase: str = "I can't read links aloud; you'll find it on our website."
+    # Per caller (anonymous visitor id), counted when a call comes in.
+    rate_limit_voice: str = "5/minute"
+    voice_max_call_seconds: int = Field(default=600, gt=0)
+    # relay only: who speaks and who listens (Twilio ConversationRelay providers).
+    voice_tts_provider: Literal["Google", "Amazon", "ElevenLabs"] = "ElevenLabs"
+    voice_voice: str = ""  # empty: the provider's default voice
+    voice_transcription_provider: Literal["Google", "Deepgram"] = "Deepgram"
+
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.
     log_level: str = "INFO"
@@ -139,7 +155,11 @@ class Settings(BaseSettings):
                 ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
                 ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
             ]
-        missing = [name for name, value in required if not value]
+        if "voice" in self.channels:
+            # Voice has no REST client (replies are TwiML or WebSocket text): it only needs the
+            # token that verifies Twilio's calls. With whatsapp too, it is already required above.
+            required.append(("TWILIO_AUTH_TOKEN", self.twilio_auth_token))
+        missing = list(dict.fromkeys(name for name, value in required if not value))
         if missing:
             raise RuntimeError(
                 f"CHANNELS enables {', '.join(self.extra_channels)} but {' and '.join(missing)} "

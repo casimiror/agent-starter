@@ -36,7 +36,10 @@ budget in hours).>
   per IP on `/api/chat`.
 - Optional channels beyond the web UI, off by default (`CHANNELS`, `docs/channels.md`): WhatsApp
   through Twilio (text only, replies sent through the REST API from a background task, so it needs
-  a host where the process keeps running; sandbox or an approved sender, no outbound templates).
+  a host where the process keeps running; sandbox or an approved sender, no outbound templates);
+  phone calls through Twilio (`VOICE_MODE=relay` ConversationRelay, which needs WebSockets, or
+  `gather`, plain webhooks bound by Twilio's ~15 s timeout; Twilio does the speech, one
+  conversation per call, links never read aloud).
   Delete this line if the project only has the web UI.
 
 **Out (and why)**

@@ -23,6 +23,10 @@ class ConversationRepository:
         row = self._conversations.insert(visitor_id=visitor_id, channel=channel)
         return Conversation.model_validate(row, from_attributes=True)
 
+    def get(self, conversation_id: UUID) -> Conversation | None:
+        row = self._conversations.get(conversation_id)
+        return Conversation.model_validate(row, from_attributes=True) if row else None
+
     def latest_for_visitor(self, visitor_id: UUID, channel: Channel) -> Conversation | None:
         row = self._conversations.latest_for_visitor(visitor_id, channel)
         return Conversation.model_validate(row, from_attributes=True) if row else None
