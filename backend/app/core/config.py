@@ -1,11 +1,12 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+CHANNEL_NAMES = ("web", "whatsapp", "voice")
 
 
 class Settings(BaseSettings):
@@ -64,6 +65,18 @@ class Settings(BaseSettings):
     max_input_chars: int = 2000
     max_history_messages: int = 20
 
+    # Channels beyond the web UI (docs/channels.md): comma-separated, e.g. CHANNELS=web,whatsapp.
+    # `web` (/api/chat) is always mounted. NoDecode: pydantic-settings would otherwise insist on
+    # JSON for a list.
+    channels: Annotated[list[str], NoDecode] = ["web"]
+    # Keys the HMAC that turns a sender (phone number) into an anonymous visitor id. Required by
+    # any non-web channel; rotating it splits every sender's history.
+    channel_id_secret: str = ""
+    # Public https origin of this app, used to build webhook URLs. Locally the ngrok domain.
+    public_base_url: str = ""
+    # A sender's conversation is reused while their last message is newer than this.
+    conversation_window_hours: float = 24
+
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.
     log_level: str = "INFO"
@@ -84,9 +97,45 @@ class Settings(BaseSettings):
     # Built React app. The Docker image and the Vercel build both put it in backend/static.
     frontend_dist: Path = BACKEND_DIR / "static"
 
+    @field_validator("channels", mode="before")
+    @classmethod
+    def _parse_channels(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.split(",")
+        if not isinstance(value, list | tuple):
+            return value
+        names = list(dict.fromkeys(n.strip().lower() for n in value if n.strip()))
+        unknown = [n for n in names if n not in CHANNEL_NAMES]
+        if unknown:
+            raise ValueError(f"unknown channel {unknown}; allowed: {', '.join(CHANNEL_NAMES)}")
+        return names or ["web"]
+
     @property
     def langfuse_enabled(self) -> bool:
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
+
+    @property
+    def extra_channels(self) -> list[str]:
+        """Enabled channels other than web."""
+        return [name for name in self.channels if name != "web"]
+
+    def check_channels(self) -> None:
+        """Fail at startup, not on the first message, when a channel can't work."""
+        if not self.extra_channels:
+            return
+        missing = [
+            name
+            for name, value in (
+                ("CHANNEL_ID_SECRET", self.channel_id_secret),
+                ("PUBLIC_BASE_URL", self.public_base_url),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"CHANNELS enables {', '.join(self.extra_channels)} but {' and '.join(missing)} "
+                "is empty: set it in .env (docs/channels.md)"
+            )
 
 
 @lru_cache
