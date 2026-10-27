@@ -110,3 +110,9 @@ def test_formatting_never_creates_or_changes_a_url():
     before = set(URL.findall(original.replace("](", " ").replace(")", " ")))
     after = {u.rstrip("*.,)") for part in format_for_whatsapp(original) for u in URL.findall(part)}
     assert after == {u.rstrip("*.,)") for u in before}
+
+
+def test_a_reply_holding_the_url_placeholder_does_not_break_the_formatting():
+    text = "see https://a.example/x and \x0099\x00 or \x000\x00 **bold**"
+    out = format_for_whatsapp(text)
+    assert out == ["see https://a.example/x and 99 or 0 *bold*"]

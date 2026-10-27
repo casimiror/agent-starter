@@ -1,8 +1,11 @@
 # Channels
 
-A **channel** is a way to reach the same agent besides the web UI: WhatsApp, voice. The agent,
-its prompt, tools and guardrails are identical on every channel; a channel only brings messages
-in, takes the reply out and says which conversation they belong to. The code of each channel lives
+A **channel** is a way to reach the same agent besides the web UI: WhatsApp, voice. The prompt,
+tools and guardrail classes are the same on every channel; a channel only brings messages in,
+takes the reply out and says which conversation they belong to. The one exception is realtime
+voice: there is no LangGraph graph, the input guardrails run on the transcript before the model
+answers, the output guardrails run on the reply's transcript and can only cut audio, and
+`format_for_speech` does not apply (see [Realtime](#realtime)). The code of each channel lives
 in this template and is tested in CI, but every channel is **off by default** and enabled by
 configuration.
 
@@ -44,6 +47,7 @@ channel=<name>)`, so they live once, in `ChannelConversations`
 | `visitor_id(sender)` | Anonymous UUID for a phone number or call id |
 | `resolve(visitor_id, channel)` | The conversation to continue, or a new one |
 | `lock(visitor_id)` | Context manager held around `resolve` + the turn |
+| `send_lock(visitor_id)` | Keeps one sender's replies in order; taken before `lock` is released |
 
 Wiring: `get_channel_conversations()` in `app/api/deps.py`.
 
@@ -70,6 +74,12 @@ on topic. The latest conversation is found with the (`visitor_id`, `channel`, `c
 Two messages from one sender in quick succession would both find no fresh conversation and open
 two. Callers wrap `resolve` and the turn in `with channels.lock(visitor_id):`; the same visitor
 waits, different visitors do not block each other.
+
+Sending a reply is slow and can hang, so it is not done inside that lock. WhatsApp locks hand over
+hand: inside `lock` it takes `send_lock(visitor_id)`, leaves `lock`, then sends. The sender's next
+message can run its LLM turn while the previous reply is still going out, and replies still leave
+in order. Each Twilio call has `TWILIO_SEND_TIMEOUT_SECONDS` (default 5), and the remaining parts
+of a reply are dropped after the first failed one.
 
 **Limitation:** it is a `threading.Lock` per key, so it works within one process only. With several
 workers or several Vercel instances two messages can still race. Closing that needs a database
@@ -142,7 +152,8 @@ Twilio REST wrapper `WhatsAppSender` (`app/clients/whatsapp_sender.py`).
 3. `WhatsAppService` does the rest: per-sender limit (polite "wait a minute" message when over),
    media or empty text gets "I can only read text messages", otherwise `resolve` +
    `ChatService.handle_turn(..., channel="whatsapp")` under the per-visitor lock. If the turn
-   fails the user gets a short apology instead of silence. Observability is flushed afterwards.
+   fails the user gets a short apology instead of silence. If formatting the reply fails, the raw
+   reply (cut to one message) is sent, never the apology. Observability is flushed afterwards.
 4. The reply is formatted for WhatsApp and sent with the REST API, from the number the user wrote
    to (the webhook's `To`), so there is no "from" setting.
 
@@ -221,6 +232,7 @@ Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`,
 | `VOICE_LINK_PHRASE` | "I can't read links aloud; you'll find it on our website." | said instead of any URL |
 | `RATE_LIMIT_VOICE` | `5/minute` | calls per caller (anonymous visitor id) |
 | `VOICE_MAX_CALL_SECONDS` | `600` | longest call |
+| `VOICE_MAX_PENDING_TURNS` | `2` | relay only: prompts running or queued at once per call; more are dropped |
 | `VOICE_TTS_PROVIDER` | `ElevenLabs` | relay only: `Google`, `Amazon` or `ElevenLabs` |
 | `VOICE_VOICE` | empty | relay only: the provider's voice name; empty is its default |
 | `VOICE_TRANSCRIPTION_PROVIDER` | `Deepgram` | relay only: `Google` or `Deepgram` |
@@ -240,7 +252,8 @@ message and `<Hangup/>`; otherwise a **new** conversation is created and the mod
 **One conversation per call.** WhatsApp reuses a sender's conversation for 24 hours because a chat
 has no end; a call does, and the next call should not inherit the last one's context (or its
 history, which is sent to the model). So every call opens a conversation (`channel = 'voice'`) with
-`ChannelConversations.start`. A caller with a hidden number (`From` empty or `anonymous`) is keyed
+`ChannelConversations.start`. A caller with a hidden number (any `From` that is not `+` and at least 8
+digits: empty, `anonymous`, `restricted`, `unknown`, Twilio's placeholder numbers) is keyed
 by the call's own SID so such callers do not share one visitor and one limit.
 
 #### `relay`
@@ -252,24 +265,31 @@ opens the WebSocket:
 
 1. **Handshake.** Twilio signs the `wss://` URL (no body) in `X-Twilio-Signature`. The route
    verifies it with `RequestValidator` against the URL built from `PUBLIC_BASE_URL`, accepting the
-   URL with or without a trailing `/` (the docs do not say which form is signed), and closes with
-   code 1008 (policy violation) before accepting otherwise.
+   URL with or without a trailing `/` (the docs do not say which form is signed), and rejects the
+   handshake before accepting otherwise (HTTP 403 on a real server; close 1008 in TestClient).
 2. `setup`: the two parameters bind the session to the conversation; it must exist and be a voice
    conversation, else the session ends. `from`, `callerName` and the other caller fields are ignored.
 3. `prompt`: acted on only when `last` is true. The turn runs in a threadpool
    (`ChatService.handle_turn(..., channel="voice")`), the reply goes through `format_for_speech`
    and is sent as `{"type":"text","token":<reply>,"last":true}`. A failed turn sends a spoken
    apology. One turn at a time per call (a lock), so a caller who speaks twice gets two answers in
-   order, never two concurrent turns. Observability is flushed after each turn.
-4. `interrupt`, `dtmf`, `error`: logged (never the digit or the words), nothing sent back.
+   order, never two concurrent turns; at most `VOICE_MAX_PENDING_TURNS` prompts wait at once
+   (the rest are dropped with a warning). A second `setup` on the same socket is ignored.
+   Observability is flushed after each turn.
+4. `interrupt` (see below), `dtmf`, `error`: logged (never the digit or the words), nothing sent
+   back.
 5. After `VOICE_MAX_CALL_SECONDS` the app sends `{"type":"end"}`; Twilio then closes the socket and
    calls the `action` URL, which answers `<Hangup/>` (`POST /api/channels/voice/relay/action`,
    signed; it logs `SessionStatus`, `SessionDuration` and `ErrorCode`).
 
-**Interruptions do not trim history.** When the caller talks over the reply Twilio sends
-`utteranceUntilInterrupt`, the part that was actually spoken. The stored assistant message keeps the
-**whole** reply, so the history the model sees can hold words the caller never heard. Trimming it
-would mean rewriting a stored message after the fact; it is not done.
+**Interruptions trim history.** When the caller talks over the reply Twilio sends
+`utteranceUntilInterrupt`, the part that was actually spoken. `RelaySession` replaces the stored
+assistant message with it (`ConversationRepository.replace_last_assistant`), so the model does not
+assume the caller heard the whole reply; if the reply is not stored yet, the heard part is stored
+instead, and an empty one becomes `…`. It acts once per reply sent (an interrupt during the
+greeting changes nothing) and not while a turn is running. Unverified against real Twilio: that
+`utteranceUntilInterrupt` always arrives before the next `prompt`. `gather` has no such text, so
+there the stored reply stays whole.
 
 #### `gather`
 
@@ -334,10 +354,12 @@ the output format of the model, so nothing is transcoded.
 | `VOICE_REALTIME_MODEL` | `gpt-realtime-2.1` | `gpt-realtime-2.1-mini` is the cheaper option |
 | `VOICE_REALTIME_VOICE` | `marin` | the model's voice; it can't change once the model has spoken in a call |
 | `VOICE_REALTIME_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | transcribes the caller; the transcript feeds the guardrails and the stored history |
+| `VOICE_REALTIME_TRANSCRIPT_WAIT_MS` | `1500` | how long the model's answer waits for the caller's transcript so the input guardrails run first; on timeout it answers anyway |
 
 `VOICE_GREETING` is the first thing the caller hears (the model is told to say it word for word);
 `VOICE_LANGUAGE`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` are for
-the other modes and ignored here.
+the other modes and ignored here (`VOICE_LANGUAGE` and `VOICE_LINK_PHRASE` too: the model speaks
+directly, so no text is formatted).
 
 #### What happens in a call
 
@@ -346,11 +368,14 @@ the other modes and ignored here.
 WebSocket.
 
 1. **Handshake.** The `wss://` URL is signed like the relay's: verified against `PUBLIC_BASE_URL`
-   with or without a trailing `/`, closed with 1008 before accepting otherwise.
+   with or without a trailing `/`, handshake rejected before accepting otherwise (HTTP 403 on a
+   real server; close 1008 in TestClient).
 2. **`start`** binds the session to the conversation (it must exist and be a voice conversation,
    else the call ends), opens `wss://api.openai.com/v1/realtime?model=...` with the key as a bearer
    token and sends `session.update`: `audio/pcmu` both ways, server-side voice detection
-   (`server_vad`), input transcription, the voice, **the same prompt file as the text agent as
+   (`server_vad` with `create_response: false` and `interrupt_response: true`: the server detects
+   turns and cancels a reply on barge-in, but **every response is created by this app**),
+   input transcription, the voice, **the same prompt file as the text agent as
    `instructions`** (nothing is added per channel) and **the same tools** (`name`, `description`
    and the arguments' JSON schema of every tool in `build_assistant_tools`), `tool_choice: auto`.
    Caller audio is dropped until the model confirms the session (`session.updated`), then the
@@ -359,6 +384,14 @@ WebSocket.
    `response.output_audio.delta` goes back as `media`, each followed by a `mark`. Twilio echoes a
    mark when that chunk has *played*, which is how the app knows how much of a reply the caller
    heard (the model produces audio faster than it plays).
+   **The answer.** When the caller's turn ends (`input_audio_buffer.committed`, or `speech_stopped`
+   if it comes first) the app holds the answer, waits up to `VOICE_REALTIME_TRANSCRIPT_WAIT_MS`
+   for `conversation.item.input_audio_transcription.completed` of that item, runs the input
+   guardrails, and only if they pass sends `response.create`. If the transcript is late or the
+   transcription `failed`, it sends `response.create` anyway so the call never stalls. Requests
+   that pile up behind a busy response collapse into one. A `response.create` refused because a
+   response is still active (`conversation_already_has_active_response`) resets the pending flags
+   and is asked again when that response is done.
 4. **Barge-in.** On `input_audio_buffer.speech_started`, if audio is still queued: Twilio `clear`
    (drops it) and `conversation.item.truncate` with `audio_end_ms` = the audio actually played, so
    the model's own memory of what it said matches what the caller heard. The reply's cancellation
@@ -389,10 +422,14 @@ The same classes and canned texts as the text channels (`assistant_guardrails` i
 `app/agents/assistant_agent.py`), applied to transcripts:
 
 - **Input** guardrails run on each caller transcript (`conversation.item.input_audio_transcription.
-  completed`). On a block the in-flight reply is cancelled (`response.cancel`), Twilio's queue is
-  cleared, the reply is truncated, and the model is told, for that one response, to say exactly the
-  guardrail's canned reply (`response.create` with `instructions`, tools off). The blocked turn is
-  stored with the canned reply.
+  completed`) **before the model answers**: the app holds `response.create` until the check passes
+  (cost: a few hundred milliseconds of extra latency per turn, up to
+  `VOICE_REALTIME_TRANSCRIPT_WAIT_MS` when the transcript is slow). On a block no model response is
+  created at all; the model is told, for that one response, to say exactly the guardrail's canned
+  reply (`response.create` with `instructions`, tools off), and the blocked turn is stored with
+  the canned reply. Only when the transcript misses the wait (or fails) does the model answer
+  first; then the check runs when the transcript lands and a block cancels the reply, clears
+  Twilio's queue and truncates it, as an output block does.
 - **Output** guardrails run on the reply's transcript as it streams
   (`response.output_audio_transcript.delta`, only up to the last complete word so a half-written
   URL is not judged), and once more on the final transcript. On a block: cancel, clear, truncate,
@@ -400,12 +437,20 @@ The same classes and canned texts as the text channels (`assistant_guardrails` i
 
 **These are weaker than in text channels, and that is inherent.** In text the output is checked
 before the user sees any of it; here the audio is already on its way. Transcription is also
-asynchronous: the caller's transcript often arrives after the model started answering, and the
-reply's transcript trails its audio. So **a few words can be heard before a block takes effect**,
-and the checks only see what the transcript contains (a price said as "five hundred dollars" has
+asynchronous. The caller's side is covered by the hold above, but the reply's transcript trails
+its audio, so **output guardrails can only cut audio mid-reply: a few words can be heard before a
+block takes effect**, and the checks only see what the transcript contains (a price said as "five hundred dollars" has
 no `$`). The prompt and the tools' design remain the real boundary; treat these as a second line.
 `format_for_speech` (which removes every URL from a reply) does not apply either: a link the model
 says aloud is caught only if its transcript contains a URL outside `ALLOWED_LINKS`.
+
+**Unverified against a live OpenAI session** (written from the API reference, covered by fakes
+only): the `create_response` / `interrupt_response` field names, the events
+`input_audio_buffer.committed`, `input_audio_buffer.speech_stopped` and
+`conversation.item.input_audio_transcription.failed`, and the error code
+`conversation_already_has_active_response`. They are marked `UNVERIFIED` in
+`app/services/voice_realtime.py`. Check them with a real call before relying on the behaviour: if
+no turn-end event arrives, the call would not be answered.
 
 #### Costs
 

@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
+import limits
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -83,6 +84,9 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     # Per sender (anonymous visitor id), not per IP: every webhook call comes from Twilio.
     rate_limit_whatsapp: str = "10/minute"
+    # Timeout of each call to Twilio's REST API when sending a reply. Short on purpose: a stuck
+    # call delays that sender's next replies (they go out in order), and each one holds a thread.
+    twilio_send_timeout_seconds: float = Field(default=5.0, gt=0)
 
     # Voice through Twilio (docs/channels.md). Required when CHANNELS includes voice (plus
     # TWILIO_AUTH_TOKEN, which signs the webhooks and the WebSocket handshake). The mode picks the
@@ -95,6 +99,9 @@ class Settings(BaseSettings):
     # Per caller (anonymous visitor id), counted when a call comes in.
     rate_limit_voice: str = "5/minute"
     voice_max_call_seconds: int = Field(default=600, gt=0)
+    # relay only: prompts accepted at once per call (the one running plus those queued behind it).
+    # Beyond it a prompt is dropped, so a flood on one socket can't pile up LLM turns.
+    voice_max_pending_turns: int = Field(default=2, gt=0)
     # relay only: who speaks and who listens (Twilio ConversationRelay providers).
     voice_tts_provider: Literal["Google", "Amazon", "ElevenLabs"] = "ElevenLabs"
     voice_voice: str = ""  # empty: the provider's default voice
@@ -108,6 +115,9 @@ class Settings(BaseSettings):
     voice_realtime_voice: str = "marin"
     # Transcribes the caller's speech: it feeds the guardrails and the stored history.
     voice_realtime_transcription_model: str = "gpt-4o-mini-transcribe"
+    # How long the model's answer waits for the caller's transcript, so the input guardrails run
+    # before it speaks. Longer: safer, more silence per turn. On timeout it answers anyway.
+    voice_realtime_transcript_wait_ms: int = Field(default=1500, ge=0)
 
     # Logs go to stdout, one JSON object per line (Vercel and Docker collect them); "text" is
     # easier to read in a local terminal.
@@ -170,6 +180,19 @@ class Settings(BaseSettings):
             required.append(("TWILIO_AUTH_TOKEN", self.twilio_auth_token))
             if self.voice_mode == "realtime":
                 required.append(("OPENAI_API_KEY", self.openai_api_key))
+        # A typo in a per-sender limit would otherwise fail on every message, not at startup.
+        limit_settings = []
+        if "whatsapp" in self.channels:
+            limit_settings.append(("RATE_LIMIT_WHATSAPP", self.rate_limit_whatsapp))
+        if "voice" in self.channels:
+            limit_settings.append(("RATE_LIMIT_VOICE", self.rate_limit_voice))
+        for name, value in limit_settings:
+            try:
+                limits.parse(value)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{name} is not a valid limit (e.g. 10/minute): set it in .env"
+                ) from exc
         missing = list(dict.fromkeys(name for name, value in required if not value))
         if missing:
             raise RuntimeError(

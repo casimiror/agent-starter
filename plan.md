@@ -35,7 +35,8 @@ budget in hours).>
 - Conversation, messages and feedback in Postgres (Supabase); Langfuse tracing per turn; rate limit
   per IP on `/api/chat`.
 - Channels beyond the web UI: <none (web only) / WhatsApp / voice, from the Channels section>.
-  Same agent, prompt and guardrails on all of them (`docs/channels.md`, `/new-channel`).
+  Same prompt, tools and guardrail classes on all of them; in realtime voice there is no LangGraph
+  graph and the guardrails act on transcripts (`docs/channels.md`, `/new-channel`).
 
 **Out (and why)**
 - <what is deliberately not built, and the reason>
@@ -84,6 +85,7 @@ Plus `guardrail` and `off_topic` cases, and the online judge in Langfuse on prod
   be heard first); the per-sender lock, deduplication and limits are per process; WebSocket and
   background-task needs rule out Vercel functions; Twilio trial accounts and the WhatsApp sandbox
   limit who can test; WhatsApp has a 24-hour window and no outbound templates>
+
 ## Open questions
 
 - <what the brief leaves open>

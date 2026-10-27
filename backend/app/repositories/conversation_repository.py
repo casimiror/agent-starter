@@ -47,3 +47,11 @@ class ConversationRepository:
     def append(self, conversation_id: UUID, role: Role, content: str) -> Message:
         row = self._messages.insert(conversation_id=conversation_id, role=role, content=content)
         return Message.model_validate(row, from_attributes=True)
+
+    def replace_last_assistant(self, conversation_id: UUID, content: str) -> bool:
+        """Overwrite the text of the conversation's last message when it is the assistant's (the
+        reply a caller cut short); False when the last message is the user's or there is none."""
+        rows = self._messages.list_by("conversation_id", conversation_id, desc=True, limit=1)
+        if not rows or rows[0].role != "assistant":
+            return False
+        return self._messages.set_content(rows[0].id, content)

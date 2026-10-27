@@ -181,3 +181,83 @@ def test_two_concurrent_messages_from_one_sender_share_one_conversation():
     assert len({call[0] for call in chat.calls}) == 1
     assert len(chat.calls) == 2
     assert len(sender.sent) == 2
+
+
+class GatedSender(FakeSender):
+    """Blocks inside `send` for the messages in `slow` until `release` is set."""
+
+    def __init__(self, slow: set[str]) -> None:
+        super().__init__()
+        self.slow = slow
+        self.release = threading.Event()
+        self.entered = threading.Event()
+
+    def send(self, to, from_, body):
+        if body in self.slow:
+            self.entered.set()
+            self.release.wait(5)
+        return super().send(to, from_, body)
+
+
+class NumberedChat(FakeChat):
+    def handle_turn(self, conversation_id, user_text, visitor_id=None, channel="web"):
+        self.calls.append((conversation_id, user_text, visitor_id, channel))
+        return SimpleNamespace(reply=f"reply to {user_text}")
+
+
+def _build_gated(slow: set[str]):
+    channels = ChannelConversations(FakeConversations(), "s3cret", timedelta(hours=24), lambda: NOW)
+    chat, sender = NumberedChat(), GatedSender(slow)
+    service = WhatsAppService(channels, chat, sender, "10/minute", lambda *_: True, lambda: None)
+    return service, chat, sender, channels
+
+
+def _start(service, text):
+    thread = threading.Thread(target=_handle, args=(service, text))
+    thread.start()
+    return thread
+
+
+def _wait_until(condition, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+def test_a_slow_send_does_not_block_the_next_turn_and_replies_keep_their_order():
+    service, chat, sender, channels = _build_gated({"reply to first"})
+    first = _start(service, "first")
+    assert sender.entered.wait(5)  # first reply is stuck in the provider call
+    second = _start(service, "second")
+    assert _wait_until(lambda: len(chat.calls) == 2)  # its turn ran meanwhile
+    assert sender.sent == []  # ...but nothing overtook the first reply
+    sender.release.set()
+    first.join(5)
+    second.join(5)
+    assert [m["body"] for m in sender.sent] == ["reply to first", "reply to second"]
+    assert channels._locks == {}  # turn and send locks are cleaned up
+
+
+def test_remaining_parts_are_not_sent_after_one_fails():
+    class FailingSender(FakeSender):
+        def send(self, to, from_, body):
+            super().send(to, from_, body)
+            return None
+
+    service, _, _, _, _ = _build(FakeChat(" ".join(["word"] * 1000)))
+    failing = FailingSender()
+    service._sender = failing
+    _handle(service)
+    assert len(failing.sent) == 1
+
+
+def test_a_formatting_failure_sends_the_raw_reply_not_the_apology(monkeypatch):
+    def broken(_):
+        raise IndexError("boom")
+
+    monkeypatch.setattr("app.services.whatsapp_service.format_for_whatsapp", broken)
+    service, _, sender, _, _ = _build(FakeChat("x" * 3000))
+    _handle(service)
+    assert [len(m["body"]) for m in sender.sent] == [1600]
+    assert APOLOGY not in [m["body"] for m in sender.sent]

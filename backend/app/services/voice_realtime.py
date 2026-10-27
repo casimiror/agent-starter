@@ -13,12 +13,22 @@ How a call flows:
 - Caller audio (`media`) goes to `input_audio_buffer.append`; model audio
   (`response.output_audio.delta`) goes back as `media` plus a `mark` per chunk. Twilio echoes a mark
   when that chunk has *played*, which is how we know how much of a reply the caller heard.
-- Barge-in (`input_audio_buffer.speech_started`): Twilio `clear` drops what is still queued, and
-  `conversation.item.truncate` tells the model how much was actually played.
+- The server's VAD only detects turns: `create_response` is off, so every `response.create` is
+  ours. When the caller's turn is committed (`input_audio_buffer.committed`) we wait for its
+  transcript (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`), run the input guardrails and only then ask for
+  the answer. A blocked transcript never reaches the model: we have it say the canned text. If the
+  transcript is late or fails, we answer anyway (the call must not stall) and the guardrail runs
+  when the transcript lands, as an output-style cut.
+- Barge-in (`input_audio_buffer.speech_started`): `interrupt_response` is on, so the server cancels
+  the reply by itself; we also send Twilio `clear` to drop what is still queued, and
+  `conversation.item.truncate` to tell the model how much was actually played.
 - The model's function calls run the agent's tools in a thread and their results go back as
   `function_call_output` + `response.create`.
-- Guardrails run on the transcripts, after the audio may have started: a violation cancels the
-  reply, drops the queued audio and has the model say the guardrail's canned text instead.
+- Output guardrails run on the reply's transcript, after the audio may have started: a violation
+  cancels the reply, drops the queued audio and has the model say the guardrail's canned text.
+
+Event and error names marked "unverified" below come from the API reference as summarised, not from
+a live session: check them against a real call before relying on them.
 - A turn is stored (`messages`, one Langfuse trace) once its reply has been fully heard or cut.
 """
 
@@ -51,6 +61,10 @@ BYTES_PER_MS = 8
 FATAL_ERROR_TYPES = {"server_error", "authentication_error", "insufficient_quota"}
 FATAL_ERROR_CODES = {"invalid_api_key", "insufficient_quota", "session_expired", "model_not_found"}
 MAX_ERRORS = 10  # a connection that keeps failing is not worth keeping
+# The error code of a `response.create` sent while another response is still active. UNVERIFIED
+# name: if the API words it differently the call still works (the error is logged and the flags
+# are reset); only the automatic retry below does not happen.
+ACTIVE_RESPONSE_CODES = {"conversation_already_has_active_response"}
 
 
 def chunk_ms(payload: str) -> float:
@@ -131,7 +145,13 @@ class RealtimeSession:
         receive: Receive,
         send: Send,
         max_seconds: float,
+        transcript_wait_s: float = 1.5,
     ) -> None:
+        self._transcript_wait_s = transcript_wait_s
+        # item_id of a committed caller turn -> the timeout that answers without its transcript.
+        self._waiting: dict[str, asyncio.Task] = {}
+        self._answer_queued = False  # an answer request sits in `_says`
+        self._creating: tuple[str | None, bool] | None = None  # the `_says` entry just sent
         self._service = service
         self._connector = connector
         self._receive = receive
@@ -156,7 +176,9 @@ class RealtimeSession:
         self._pending_users: list[str] = []  # transcripts that arrived before their response
         self._continue: _Turn | None = None  # the turn a tool follow-up belongs to
         self._followup: _Turn | None = None
-        self._says: deque[tuple[str, bool]] = deque()
+        # What to ask the model next: (text to say, canned) or (None, False) for "answer the
+        # caller" (a plain response.create).
+        self._says: deque[tuple[str | None, bool]] = deque()
         self._calls: set[str] = set()
         self._tools_running = 0
         self._marks: dict[str, tuple[_Response, float]] = {}
@@ -187,7 +209,7 @@ class RealtimeSession:
         self._finished.set()
 
     async def _shutdown(self) -> None:
-        for task in self._tasks:
+        for task in [*self._tasks, *self._waiting.values()]:
             task.cancel()
         # First, before anything that awaits for long: if the server cancels this handler (a
         # shutdown), the billed model session must still be closed.
@@ -328,8 +350,16 @@ class RealtimeSession:
         elif kind == "input_audio_buffer.speech_started":
             if self._marks:  # something is still playing: the caller talks over it
                 await self._clear_playback()
+        elif kind in ("input_audio_buffer.committed", "input_audio_buffer.speech_stopped"):
+            # UNVERIFIED names: either one means the caller's turn ended (both carry `item_id`;
+            # the first to arrive starts the wait, so a missing one can't leave the call silent).
+            await self._on_committed(str(event.get("item_id") or ""))
         elif kind == "conversation.item.input_audio_transcription.completed":
-            await self._on_user_transcript(str(event.get("transcript") or "").strip())
+            await self._on_user_transcript(
+                str(event.get("transcript") or "").strip(), str(event.get("item_id") or "")
+            )
+        elif kind == "conversation.item.input_audio_transcription.failed":  # UNVERIFIED name
+            await self._on_transcript_failed(str(event.get("item_id") or ""))
         elif kind == "response.function_call_arguments.done":
             self._on_call(event.get("response_id"), event)
         elif kind == "response.created":
@@ -364,8 +394,20 @@ class RealtimeSession:
         ):
             self._end("realtime error")
             return
-        # A response.create that failed will never get its response.created.
+        # A response.create that failed will never get its response.created: forget it, and the
+        # turn it was continuing (else the next response would be glued to a stale turn).
         self._awaiting_created = False
+        stale_turn, self._continue = self._continue, None
+        sent, self._creating = self._creating, None
+        if code in ACTIVE_RESPONSE_CODES:
+            # We asked while a response was still active: ask again once it is done (`_on_done`
+            # pumps). Dropping the request would leave the caller unanswered.
+            if stale_turn is not None:
+                self._followup = stale_turn
+            elif sent is not None:
+                self._answer_queued = self._answer_queued or sent[0] is None
+                self._says.appendleft(sent)
+            return
         await self._pump()
 
     # --- responses ---------------------------------------------------------------------------
@@ -378,6 +420,7 @@ class RealtimeSession:
         if not response_id:
             return
         self._awaiting_created = False
+        self._creating = None
         if self._continue is not None:  # the follow-up to a tool call: same turn
             turn, self._continue = self._continue, None
         else:
@@ -435,7 +478,46 @@ class RealtimeSession:
             )
             await self._block(resp, result)
 
-    async def _on_user_transcript(self, text: str) -> None:
+    async def _on_committed(self, item_id: str) -> None:
+        """The caller's turn ended: the model will not answer by itself (`create_response` is
+        off), so wait for the transcript, check it, and only then ask for the answer."""
+        if not item_id or item_id in self._waiting or not self._ready:
+            return
+        if self._transcript_wait_s <= 0:
+            await self._request_answer()
+            return
+        self._waiting[item_id] = asyncio.create_task(self._transcript_timeout(item_id))
+
+    async def _transcript_timeout(self, item_id: str) -> None:
+        await asyncio.sleep(self._transcript_wait_s)
+        if self._waiting.pop(item_id, None) is None:
+            return
+        # Answer without the check so the call never stalls; the transcript, when it lands, goes
+        # through `_on_user_transcript` as a late one (a block then cuts the reply, as before).
+        log.warning("voice transcript late, answering without it", extra=self._fields())
+        await self._request_answer()
+
+    async def _on_transcript_failed(self, item_id: str) -> None:
+        waiter = self._waiting.pop(item_id, None)
+        log.warning("voice transcription failed", extra=self._fields())
+        if waiter is not None:
+            waiter.cancel()
+            await self._request_answer()  # nothing to check: answer rather than stall
+
+    async def _request_answer(self) -> None:
+        """Queue one `response.create` for the caller's turn (several requests that wait behind a
+        busy response collapse into one: the model hears all of the audio anyway)."""
+        if not self._answer_queued:
+            self._answer_queued = True
+            self._says.append((None, False))
+        await self._pump()
+
+    async def _on_user_transcript(self, text: str, item_id: str = "") -> None:
+        waiter = self._waiting.pop(item_id, None) if item_id else None
+        if waiter is not None:
+            waiter.cancel()
+            await self._on_awaited_transcript(text)
+            return
         if not text:
             return
         latest = self._latest
@@ -452,7 +534,25 @@ class RealtimeSession:
                 resp.turn.users.append(text)
                 await self._block(resp, result)
             return
-        # Nothing of ours is being said: store the blocked turn and answer it now.
+        await self._block_input(text, result)
+
+    async def _on_awaited_transcript(self, text: str) -> None:
+        """The transcript of a turn we are holding the answer for."""
+        if not text:  # nothing intelligible was said: there is nothing to answer
+            return
+        result = self._service.check_input(text)
+        if not result.allowed:
+            log.warning(
+                "voice input blocked", extra={**self._fields(), "blocked_by": result.reason}
+            )
+            await self._block_input(text, result)
+            return
+        self._pending_users.append(text)
+        await self._request_answer()
+
+    async def _block_input(self, text: str, result: GuardrailResult) -> None:
+        """Nothing of ours is being said: store the blocked turn and say the canned text. The
+        model never answers this turn."""
         await self._clear_playback()
         users, self._pending_users = [*self._pending_users, text], []
         self._spawn_record(" ".join(users), result.replacement or "", result.reason, [], "")
@@ -579,23 +679,47 @@ class RealtimeSession:
         if self._active_id is not None or self._awaiting_created or self._tools_running:
             return
         if self._says:
-            text, canned = self._says.popleft()
+            entry = self._says.popleft()
+            text, canned = entry
+            if text is None:  # answer the caller (the model has heard the audio and the tools)
+                self._answer_queued = False
+                if self._followup is not None:
+                    # A tool follow-up is due: it is the same reply. Fold the new words into
+                    # its turn and let it answer both.
+                    turn, self._followup = self._followup, None
+                    turn.users.extend(self._pending_users)
+                    self._pending_users = []
+                    await self._create(turn=turn)
+                    return
+                self._next_canned = False
+                await self._create()
+                return
             self._followup = None  # a canned reply replaces whatever would have followed
             self._next_canned = canned
-            self._awaiting_created = True
-            await self._to_openai(
-                {
-                    "type": "response.create",
-                    "response": {"instructions": say_instructions(text), "tool_choice": "none"},
-                }
+            await self._create(
+                {"instructions": say_instructions(text), "tool_choice": "none"}, sent=entry
             )
         elif self._followup is not None:
             turn, self._followup = self._followup, None
             if turn.blocked_by is not None:
                 return
-            self._continue = turn
-            self._awaiting_created = True
-            await self._to_openai({"type": "response.create"})
+            await self._create(turn=turn)
+
+    async def _create(
+        self,
+        response: dict[str, Any] | None = None,
+        turn: _Turn | None = None,
+        sent: tuple[str | None, bool] | None = None,
+    ) -> None:
+        """Send one `response.create`. `turn` is the turn it continues (a tool follow-up);
+        `sent` is what to queue again if the API refuses it for an active response."""
+        self._continue = turn
+        self._creating = sent if sent is not None else ((None, False) if turn is None else None)
+        self._awaiting_created = True
+        event: dict[str, Any] = {"type": "response.create"}
+        if response is not None:
+            event["response"] = response
+        await self._to_openai(event)
 
     # --- history -----------------------------------------------------------------------------
 

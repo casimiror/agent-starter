@@ -22,8 +22,10 @@ def sign(url=WS_URL, token=TOKEN) -> dict[str, str]:
     return {"X-Twilio-Signature": RequestValidator(token).compute_signature(url, {})}
 
 
-def make_client(chat=None, mode="relay", max_call_seconds=600):
-    settings = make_settings(voice_mode=mode, voice_max_call_seconds=max_call_seconds)
+def make_client(chat=None, mode="relay", max_call_seconds=600, **settings_values):
+    settings = make_settings(
+        voice_mode=mode, voice_max_call_seconds=max_call_seconds, **settings_values
+    )
     voice = make_voice(chat, max_call_seconds=max_call_seconds)
     app = FastAPI()
     include_channel_routers(app, settings)
@@ -91,7 +93,7 @@ def test_a_failing_turn_is_a_spoken_apology_and_the_call_goes_on():
 
 def test_overlapping_prompts_never_run_two_turns_at_once():
     chat = FakeChat("done", delay=0.05)
-    client, _, call = make_client(chat)
+    client, _, call = make_client(chat, voice_max_pending_turns=3)
     with client.websocket_connect(PATH, headers=sign()) as ws:
         ws.send_json(setup_message(call))
         for text in ("one", "two", "three"):
@@ -268,3 +270,101 @@ def test_the_action_url_checks_the_signature_and_the_mode():
     assert post_action(client, {"CallSid": "CA1"}, signature="bad").status_code == 403
     gather_client, _, _ = make_client(mode="gather")
     assert post_action(gather_client, {"CallSid": "CA1"}).status_code == 404
+
+
+def _interrupt(heard="Our prices st"):
+    return {"type": "interrupt", "utteranceUntilInterrupt": heard, "durationUntilInterruptMs": 900}
+
+
+def test_an_interrupt_replaces_the_stored_reply_with_what_the_caller_heard():
+    client, voice, call = make_client(FakeChat("Our prices start at ten euros a month."))
+    with client.websocket_connect(PATH, headers=sign()) as ws:
+        ws.send_json(setup_message(call))
+        ws.send_json(prompt("prices?"))
+        ws.receive_json()
+        ws.send_json(_interrupt())
+        ws.send_json(prompt("ok"))  # the interrupt is handled before this turn runs
+        ws.receive_json()
+    contents = [(m[1], m[2]) for m in voice.repo.messages]
+    assert contents[:2] == [("user", "prices?"), ("assistant", "Our prices st")]
+    assert contents[2] == ("user", "ok")
+
+
+def test_an_interrupt_stores_the_heard_text_when_the_reply_is_not_stored_yet():
+    chat = FakeChat("Our prices start at ten euros a month.")
+    client, voice, call = make_client(chat)
+    chat.store = None  # the turn did not persist (yet)
+    with client.websocket_connect(PATH, headers=sign()) as ws:
+        ws.send_json(setup_message(call))
+        ws.send_json(prompt("prices?"))
+        ws.receive_json()
+        ws.send_json(_interrupt())
+        ws.send_json(prompt("ok"))
+        ws.receive_json()
+    assert [(m[1], m[2]) for m in voice.repo.messages] == [("assistant", "Our prices st")]
+
+
+def test_an_interrupt_that_heard_nothing_leaves_a_placeholder_not_an_empty_message():
+    client, voice, call = make_client()
+    with client.websocket_connect(PATH, headers=sign()) as ws:
+        ws.send_json(setup_message(call))
+        ws.send_json(prompt("hi"))
+        ws.receive_json()
+        ws.send_json(_interrupt(""))
+        ws.send_json(prompt("again"))
+        ws.receive_json()
+    assert voice.repo.messages[1][2] == "…"
+
+
+def test_an_interrupt_during_the_greeting_or_twice_changes_nothing_more():
+    client, voice, call = make_client(FakeChat("Full reply here."))
+    with client.websocket_connect(PATH, headers=sign()) as ws:
+        ws.send_json(setup_message(call))
+        ws.send_json(_interrupt("Hello, thanks for"))  # the greeting is not a stored reply
+        ws.send_json(prompt("hi"))
+        ws.receive_json()
+        ws.send_json(_interrupt("Full"))
+        ws.send_json(_interrupt("Full reply"))  # a second one for the same reply is ignored
+        ws.send_json(prompt("again"))
+        ws.receive_json()
+    assert [m[2] for m in voice.repo.messages] == ["hi", "Full", "again", "Full reply here."]
+
+
+def test_a_second_setup_is_ignored_and_does_not_rebind_the_session(caplog):
+    chat = FakeChat()
+    client, voice, call = make_client(chat)
+    other = voice.service.start_call("+34600999888", "CA2")
+    with caplog.at_level(logging.WARNING):
+        with client.websocket_connect(PATH, headers=sign()) as ws:
+            ws.send_json(setup_message(call))
+            ws.send_json(setup_message(other))
+            ws.send_json(prompt("hi"))
+            assert ws.receive_json()["type"] == "text"
+    assert chat.calls[0][0] == call.conversation_id
+    assert "voice setup ignored, already set up" in caplog.text
+
+
+def test_prompts_beyond_the_pending_cap_are_dropped(caplog):
+    chat = FakeChat("done", delay=0.2)
+    client, _, call = make_client(chat, voice_max_pending_turns=2)
+    with caplog.at_level(logging.WARNING):
+        with client.websocket_connect(PATH, headers=sign()) as ws:
+            ws.send_json(setup_message(call))
+            for text in ("one", "two", "three", "four"):
+                ws.send_json(prompt(text))
+            replies = [ws.receive_json(), ws.receive_json()]
+    assert [r["token"] for r in replies] == ["done", "done"]
+    assert [c[1] for c in chat.calls] == ["one", "two"]
+    assert "voice prompt dropped, too many pending" in caplog.text
+    assert "three" not in caplog.text
+
+
+def test_closing_the_socket_mid_turn_cancels_the_turns_cleanly():
+    chat = FakeChat("done", delay=0.3)
+    client, _, call = make_client(chat)
+    with client.websocket_connect(PATH, headers=sign()) as ws:
+        ws.send_json(setup_message(call))
+        ws.send_json(prompt("slow"))
+    # Leaving the block closed the socket while the turn ran: the handler must have finished
+    # (TestClient waits for it) instead of leaving a pending task behind.
+    assert chat.calls[0][1] == "slow"

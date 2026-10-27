@@ -1,12 +1,13 @@
 import logging
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import Protocol
 
 from app.core import observability
 from app.core.rate_limit import hit_sender
 from app.services.channel_conversations import ChannelConversations
 from app.services.chat_service import ChatService
-from app.services.whatsapp_format import format_for_whatsapp
+from app.services.whatsapp_format import MAX_MESSAGE_CHARS, format_for_whatsapp
 
 log = logging.getLogger("app.whatsapp")
 
@@ -66,18 +67,37 @@ class WhatsAppService:
             self._flush()
 
     def _answer(self, visitor_id, sender: str, to: str, text: str, fields: dict) -> None:
-        # Replies are sent inside the lock too, so two quick messages are answered in order.
-        with self._channels.lock(visitor_id):
-            try:
-                conversation_id = self._channels.resolve(visitor_id, "whatsapp")
-                result = self._chat.handle_turn(
-                    conversation_id, text, visitor_id, channel="whatsapp"
-                )
-            except Exception as exc:
-                # Only the exception type: its message and traceback can carry the user's text
-                # (SQLAlchemy errors print the statement parameters).
-                log.error("whatsapp turn failed", extra={**fields, "error": type(exc).__name__})
-                self._sender.send(to=sender, from_=to, body=APOLOGY)
-                return
-            for part in format_for_whatsapp(result.reply):
-                self._sender.send(to=sender, from_=to, body=part)
+        # Hand over hand: the turn lock covers resolve + turn only. Before releasing it we take
+        # the send lock, so the next message's turn can run while this reply goes out (a slow
+        # Twilio doesn't stall the sender) and replies still leave in order.
+        with ExitStack() as sending:
+            with self._channels.lock(visitor_id):
+                try:
+                    conversation_id = self._channels.resolve(visitor_id, "whatsapp")
+                    result = self._chat.handle_turn(
+                        conversation_id, text, visitor_id, channel="whatsapp"
+                    )
+                except Exception as exc:
+                    # Only the exception type: its message and traceback can carry the user's text
+                    # (SQLAlchemy errors print the statement parameters).
+                    log.error("whatsapp turn failed", extra={**fields, "error": type(exc).__name__})
+                    parts = [APOLOGY]
+                else:
+                    parts = self._format(result.reply, fields)
+                sending.enter_context(self._channels.send_lock(visitor_id))
+            for part in parts:
+                if self._sender.send(to=sender, from_=to, body=part) is None:
+                    # The sender returns None on failure: the later parts would arrive without
+                    # the earlier one, and each retry could wait out the timeout again.
+                    log.warning("whatsapp reply cut short", extra=fields)
+                    break
+
+    @staticmethod
+    def _format(reply: str, fields: dict) -> list[str]:
+        """The reply as WhatsApp messages. The turn is already saved, so a formatting bug must not
+        turn into an apology: fall back to the raw reply, cut to one message."""
+        try:
+            return format_for_whatsapp(reply)
+        except Exception as exc:
+            log.error("whatsapp formatting failed", extra={**fields, "error": type(exc).__name__})
+            return [reply.replace("\x00", "")[:MAX_MESSAGE_CHARS]]

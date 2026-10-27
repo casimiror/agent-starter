@@ -76,8 +76,8 @@ def get_whatsapp_sender() -> "WhatsAppSender":
     from app.clients.whatsapp_sender import WhatsAppSender
 
     settings = get_settings()
-    # A timeout, so a stuck Twilio call can't hold the per-visitor lock forever.
-    http = TwilioHttpClient(timeout=15)
+    # A short timeout, so a stuck Twilio call can't hold the sender's send lock for long.
+    http = TwilioHttpClient(timeout=settings.twilio_send_timeout_seconds)
     client = Client(settings.twilio_account_sid, settings.twilio_auth_token, http_client=http)
     return WhatsAppSender(client)
 

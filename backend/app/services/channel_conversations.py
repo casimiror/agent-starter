@@ -29,7 +29,7 @@ class ChannelConversations:
         self._window = window
         self._now = now
         # Per process, not global: see `lock`.
-        self._locks: dict[UUID, tuple[threading.Lock, int]] = {}
+        self._locks: dict[tuple[UUID, str], tuple[threading.Lock, int]] = {}
         self._locks_guard = threading.Lock()
 
     def visitor_id(self, sender: str) -> UUID:
@@ -62,6 +62,13 @@ class ChannelConversations:
         found = self._conversations.get(conversation_id)
         return found if found and found.channel == channel else None
 
+    def record_heard(self, conversation_id: UUID, heard: str) -> None:
+        """A spoken reply was cut short: keep only what the caller heard as the assistant's
+        message, so the next turn does not assume the whole reply was said. When the reply is not
+        stored yet (the last message is not the assistant's), store the heard part instead."""
+        if not self._conversations.replace_last_assistant(conversation_id, heard):
+            self._conversations.append(conversation_id, "assistant", heard)
+
     @contextmanager
     def lock(self, visitor_id: UUID) -> Iterator[None]:
         """Hold around `resolve` + the turn, so two quick messages from one sender don't both
@@ -70,16 +77,31 @@ class ChannelConversations:
         The lock lives in this process: it protects a single worker (local dev, one container).
         With several workers or Vercel instances two messages can still race; closing that needs
         a database lock (advisory lock) or a unique "open conversation" row per sender."""
+        with self._hold((visitor_id, "turn")):
+            yield
+
+    @contextmanager
+    def send_lock(self, visitor_id: UUID) -> Iterator[None]:
+        """Keeps one sender's replies in order while `lock` is already free for the next turn.
+
+        Hand over hand: take this lock while still holding `lock`, then release `lock` and send.
+        A slow provider then delays only that sender's later replies, not their next LLM turn,
+        and a reply can't overtake the one before it."""
+        with self._hold((visitor_id, "send")):
+            yield
+
+    @contextmanager
+    def _hold(self, key: tuple[UUID, str]) -> Iterator[None]:
         with self._locks_guard:
-            entry, users = self._locks.get(visitor_id, (threading.Lock(), 0))
-            self._locks[visitor_id] = (entry, users + 1)
+            entry, users = self._locks.get(key, (threading.Lock(), 0))
+            self._locks[key] = (entry, users + 1)
         try:
             with entry:
                 yield
         finally:
             with self._locks_guard:
-                _, users = self._locks[visitor_id]
+                _, users = self._locks[key]
                 if users == 1:
-                    del self._locks[visitor_id]  # no waiters left: don't keep one lock per sender
+                    del self._locks[key]  # no waiters left: don't keep one lock per sender
                 else:
-                    self._locks[visitor_id] = (entry, users - 1)
+                    self._locks[key] = (entry, users - 1)

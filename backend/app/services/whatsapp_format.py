@@ -35,6 +35,8 @@ def _bold_per_line(match: re.Match[str]) -> str:
 def to_whatsapp_markup(text: str) -> str:
     """`[text](url)` -> `text: url` (just `url` when they are the same), `**bold**` -> `*bold*`,
     headings -> plain lines."""
+    # The shield below uses NUL; a reply that already holds one would be taken for a placeholder.
+    text = text.replace("\x00", "")
     text = _LINK.sub(lambda m: m[2] if m[1] == m[2] else f"{m[1]}: {m[2]}", text)
 
     urls: list[str] = []

@@ -149,3 +149,26 @@ def test_voice_alone_does_not_need_the_account_sid():
 
 def test_whatsapp_rate_limit_defaults_to_ten_a_minute():
     assert _settings().rate_limit_whatsapp == "10/minute"
+
+
+@pytest.mark.parametrize(
+    ("channel", "setting", "name"),
+    [
+        ("whatsapp", "rate_limit_whatsapp", "RATE_LIMIT_WHATSAPP"),
+        ("voice", "rate_limit_voice", "RATE_LIMIT_VOICE"),
+    ],
+)
+def test_a_bad_sender_limit_fails_at_startup(channel, setting, name):
+    with pytest.raises(RuntimeError, match=name):
+        _settings(
+            channels=[channel],
+            channel_id_secret="s",
+            public_base_url="https://x.example",
+            twilio_account_sid="AC1",
+            twilio_auth_token="t",
+            **{setting: "ten per minute"},
+        ).check_channels()
+
+
+def test_twilio_send_timeout_defaults_to_five_seconds():
+    assert _settings().twilio_send_timeout_seconds == 5

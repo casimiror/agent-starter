@@ -72,6 +72,22 @@ class VoiceService:
             return None
         return VoiceCall(conversation.visitor_id, conversation.id, conversation.created_at)
 
+    def record_heard(self, call: VoiceCall, heard: str, call_sid: str = "") -> None:
+        """The caller interrupted a reply: store the part they heard instead of the whole reply.
+        Never raises (it runs beside a live call); blocking, call it from a thread."""
+        try:
+            self._channels.record_heard(call.conversation_id, heard)
+        except Exception as exc:
+            log.error(
+                "voice heard text not stored",
+                extra={
+                    "visitor_id": str(call.visitor_id),
+                    "conversation_id": str(call.conversation_id),
+                    "call_sid": call_sid,
+                    "error": type(exc).__name__,
+                },
+            )
+
     def over_time(self, call: VoiceCall) -> bool:
         """The call has lasted `VOICE_MAX_CALL_SECONDS` (used where nothing else holds the call
         open: gather mode checks it on every turn)."""
