@@ -110,6 +110,27 @@ def test_hidden_callers_are_not_lumped_into_one_visitor():
     assert len(set(keys)) == 2
 
 
+@pytest.mark.parametrize(
+    "hidden",
+    ["", "anonymous", "Restricted", "unavailable", "unknown", "+266696687", "+7378742833",
+     "+86282452253", "+123", "34600123456", "client:alice"],
+)  # fmt: skip
+def test_any_from_that_is_not_a_real_number_is_keyed_by_the_call(hidden):
+    keys: list[str] = []
+    client, _, _ = make_client(hit=lambda limit, channel, key: keys.append(key) or True)
+    post(client, {**FORM, "From": hidden, "CallSid": "CA1"})
+    post(client, {**FORM, "From": hidden, "CallSid": "CA2"})
+    assert len(set(keys)) == 2
+
+
+def test_a_real_number_is_one_visitor_across_calls():
+    keys: list[str] = []
+    client, _, _ = make_client(hit=lambda limit, channel, key: keys.append(key) or True)
+    post(client, {**FORM, "From": "+34600123456", "CallSid": "CA1"})
+    post(client, {**FORM, "From": "+34600123456", "CallSid": "CA2"})
+    assert len(set(keys)) == 1
+
+
 def test_a_failing_start_is_a_spoken_apology_not_a_500():
     def broken(*_):
         raise RuntimeError("limiter storage down")

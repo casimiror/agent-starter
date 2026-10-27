@@ -6,6 +6,7 @@ rest of the call (`voice_relay.py`: WebSocket, `voice_gather.py`: webhook per tu
 """
 
 import logging
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -24,9 +25,17 @@ router.include_router(voice_relay.router)
 router.include_router(voice_gather.router)
 router.include_router(voice_realtime.router)
 
-# What Twilio sends as `From` when the caller hides their number: shared by every such caller, so
-# hashing it would give them all one visitor (and one rate limit).
-_HIDDEN_CALLERS = {"", "anonymous", "+266696687"}
+# A real caller is E.164: `+` and at least 8 digits. Anything else (empty, "anonymous",
+# "restricted", "unavailable", "unknown", or Twilio's placeholder numbers such as +266696687,
+# +7378742833, +86282452253) stands for every caller who hides their number: hashing it would give
+# them all one visitor (and one rate limit).
+_REAL_NUMBER = re.compile(r"\+\d{8,}")
+# Numbers that look real but are Twilio's placeholders for a hidden caller.
+_PLACEHOLDER_NUMBERS = {"+266696687", "+7378742833", "+86282452253"}
+
+
+def _is_hidden(caller: str) -> bool:
+    return not _REAL_NUMBER.fullmatch(caller) or caller in _PLACEHOLDER_NUMBERS
 
 
 def twiml_response(document: str) -> Response:
@@ -49,7 +58,7 @@ async def incoming(
     # The number is personal data: it only goes into the keyed hash. A hidden number falls back to
     # the call's own SID, so such callers are not lumped together.
     caller = params.get("From", "")
-    caller = call_sid if caller.lower() in _HIDDEN_CALLERS else caller
+    caller = call_sid if _is_hidden(caller.strip()) else caller
     try:
         call = await run_in_threadpool(service.start_call, caller, call_sid)
     except Exception as exc:

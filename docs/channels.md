@@ -248,7 +248,8 @@ message and `<Hangup/>`; otherwise a **new** conversation is created and the mod
 **One conversation per call.** WhatsApp reuses a sender's conversation for 24 hours because a chat
 has no end; a call does, and the next call should not inherit the last one's context (or its
 history, which is sent to the model). So every call opens a conversation (`channel = 'voice'`) with
-`ChannelConversations.start`. A caller with a hidden number (`From` empty or `anonymous`) is keyed
+`ChannelConversations.start`. A caller with a hidden number (any `From` that is not `+` and at least 8
+digits: empty, `anonymous`, `restricted`, `unknown`, Twilio's placeholder numbers) is keyed
 by the call's own SID so such callers do not share one visitor and one limit.
 
 #### `relay`
