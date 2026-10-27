@@ -34,6 +34,32 @@ api/routes  ->  services  ->  repositories  ->  db/daos  ->  Postgres
 
 Wiring of concrete classes happens **only** in `app/api/deps.py`.
 
+### Folder per feature
+
+Inside each layer (routes, services, clients, tests), the files of a feature or channel live in a
+subfolder named after it; a helper sits in the folder of what it serves (`format`, `twiml`,
+`session`...), never as a loose `<channel>_<thing>.py` at the layer root. Layering still applies
+inside each folder. Code several channels share lives one level up (`twilio_security.py`,
+`conversations.py`), or in `app/core/` when it is generic.
+
+```
+api/routes/channels/   __init__.py (registry), twilio_security.py (shared), whatsapp.py,
+                       voice/ __init__.py (router), incoming.py, modes.py, relay.py, gather.py,
+                       realtime.py
+services/channels/     conversations.py (shared),
+                       whatsapp/ service.py, format.py
+                       voice/ service.py, format.py, twiml.py, relay.py,
+                              realtime/ service.py, session.py
+clients/               whatsapp_sender.py, openai_realtime.py   (flat: <provider>_<what>.py)
+tests/channels/        test_channel_conversations.py, test_channels_config.py,
+                       whatsapp/..., voice/..., voice/realtime/... (fakes next to their tests)
+```
+
+A new channel `<name>` goes in `routes/channels/<name>/` (a single `<name>.py` is fine until it
+has a second file), `services/channels/<name>/`, its external API wrapper in
+`clients/<provider>_<what>.py` and its tests in `tests/channels/<name>/`. Test file names stay
+unique across the tree (no `__init__.py` in `tests/`).
+
 ## HTTP API
 
 | Method and path | Body | Response |
@@ -83,7 +109,7 @@ Graph diagram and how to modify or create agents: [`backend/app/agents/README.md
 
 ## Channels
 
-`ChannelConversations` (`app/services/channel_conversations.py`) is the part every non-web channel
+`ChannelConversations` (`app/services/channels/conversations.py`) is the part every non-web channel
 shares: an anonymous keyed-hash `visitor_id` per sender, the conversation to continue (latest on
 the channel while inside `CONVERSATION_WINDOW_HOURS`) and a per-visitor lock. `hit_sender` in
 `app/core/rate_limit.py` limits per sender on the limiter's storage. Both are wired or used by the
@@ -112,19 +138,19 @@ Logs hold `visitor_id`, `message_sid`, Twilio error codes and exception types: n
 
 ### A voice turn
 
-Every Twilio route first goes through `app/api/twilio_security.py`: a 64 KB body cap and the
+Every Twilio route first goes through `app/api/routes/channels/twilio_security.py`: a 64 KB body cap and the
 signature check against `PUBLIC_BASE_URL` (for the WebSocket handshake, the `wss://` URL with or
-without a trailing slash). `VoiceService` (`app/services/voice_service.py`) is what the modes share:
+without a trailing slash). `VoiceService` (`app/services/channels/voice/service.py`) is what the modes share:
 
 1. `POST /api/channels/voice/incoming` -> `VoiceService.start_call(From, CallSid)`:
    `hit_sender(RATE_LIMIT_VOICE, "voice", visitor_id)`, then `ChannelConversations.start`, a **new**
    conversation per call (no 24 h reuse). The TwiML comes from `INCOMING[VOICE_MODE]`
-   (`app/services/voice_twiml.py`); it holds only `visitor_id` and `conversation_id`.
+   (`app/services/channels/voice/twiml.py`); it holds only `visitor_id` and `conversation_id`.
 2. A turn is `VoiceService.answer(call, text)`: `ChatService.handle_turn(..., channel="voice")`,
    then `format_for_speech` (after the output guardrails: strips Markdown, removes every URL and
    says `VOICE_LINK_PHRASE` once instead), flush of observability. It never raises: a failed turn
    is a spoken apology. It blocks, so routes call it in a threadpool.
-3. `relay`: `RelaySession` (`app/services/voice_relay.py`) handles Twilio's WebSocket messages with
+3. `relay`: `RelaySession` (`app/services/channels/voice/relay.py`) handles Twilio's WebSocket messages with
    no socket code: `setup` binds the session to the conversation (looked up with
    `ChannelConversations.find`, which also checks the channel), a final `prompt` runs a turn under
    a per-call lock and yields one `text` message, `interrupt` rewrites the stored reply to what the caller heard (`dtmf`/`error` are logged), and past
@@ -134,7 +160,7 @@ without a trailing slash). `VoiceService` (`app/services/voice_service.py`) is w
    with the reply and another `<Gather>`; empty speech is re-prompted once, then the call ends.
 
 Adding a mode: a value in `Settings.voice_mode`, a builder in `INCOMING`, a router included in
-`voice.py` and gated to the mode (HTTP routes with `only("<mode>")`, a WebSocket by closing the
+`routes/channels/voice/__init__.py` and gated to the mode (HTTP routes with `only("<mode>")`, a WebSocket by closing the
 handshake with 1008 when `voice_mode` differs, as `relay` and `realtime` do).
 
 Logs hold `visitor_id`, `conversation_id`, `call_sid`, Twilio error codes and exception types: never
@@ -144,12 +170,12 @@ Logs hold `visitor_id`, `conversation_id`, `call_sid`, Twilio error codes and ex
 
 `VOICE_MODE=realtime` has no agent graph: an audio model answers. `/incoming` returns
 `<Connect><Stream>` and Twilio opens `WS /api/channels/voice/stream`
-(`routes/channels/voice_realtime.py`), which does only HTTP/WebSocket work: verify the handshake
+(`routes/channels/voice/realtime.py`), which does only HTTP/WebSocket work: verify the handshake
 signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSession`.
 
-- `RealtimeSession` (`app/services/voice_realtime.py`) is the bridge, with no socket code. On
+- `RealtimeSession` (`app/services/channels/voice/realtime/session.py`) is the bridge, with no socket code. On
   Twilio `start` it loads the call (`VoiceService.find_call`), opens the model connection
-  through a `RealtimeConnector` (`app/clients/realtime.py`, a Protocol; `OpenAIRealtimeConnector`
+  through a `RealtimeConnector` (`app/clients/openai_realtime.py`, a Protocol; `OpenAIRealtimeConnector`
   uses `websockets`) and runs two directions in one event loop: Twilio events in, model events in.
   State per response: audio sent and played (from Twilio `mark` echoes), transcript so far, whether
   it was cut. Barge-in and guardrail blocks go through one routine (`_clear_playback`): Twilio
@@ -157,7 +183,7 @@ signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSessi
   every response itself (`create_response: false`): it holds the answer until the caller's
   transcript passed the input guardrails (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`, then it answers
   anyway).
-- `RealtimeVoiceService` (`app/services/realtime_voice_service.py`) is what the session needs from
+- `RealtimeVoiceService` (`app/services/channels/voice/realtime/service.py`) is what the session needs from
   the app: `session_update()` (the agent's prompt file via `load_prompt`, its tools converted by
   `realtime_tools`), `check_input` / `check_output` (the lists from `assistant_guardrails`, the
   same objects the graph is built with), `run_tool` (the tool with `config={"configurable":
@@ -165,7 +191,7 @@ signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSessi
   `append` for both messages, one `trace_turn` with the `channel:voice` tag, flush). It blocks, so
   the session calls it with `asyncio.to_thread`.
 - Wiring in `deps.py`: `get_realtime_connector`, `get_realtime_voice_service`. Tests override both
-  (`tests/realtime_fakes.py`).
+  (`tests/channels/voice/realtime/realtime_fakes.py`).
 
 A turn is a response (plus its tool follow-ups). It is stored when the caller has heard the reply
 or it was cut, so an interrupted reply is stored as the played part. Guardrails on transcripts are
