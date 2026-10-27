@@ -1,8 +1,11 @@
 # Channels
 
-A **channel** is a way to reach the same agent besides the web UI: WhatsApp, voice. The agent,
-its prompt, tools and guardrails are identical on every channel; a channel only brings messages
-in, takes the reply out and says which conversation they belong to. The code of each channel lives
+A **channel** is a way to reach the same agent besides the web UI: WhatsApp, voice. The prompt,
+tools and guardrail classes are the same on every channel; a channel only brings messages in,
+takes the reply out and says which conversation they belong to. The one exception is realtime
+voice: there is no LangGraph graph, the input guardrails run on the transcript before the model
+answers, the output guardrails run on the reply's transcript and can only cut audio, and
+`format_for_speech` does not apply (see [Realtime](#realtime)). The code of each channel lives
 in this template and is tested in CI, but every channel is **off by default** and enabled by
 configuration.
 
@@ -262,8 +265,8 @@ opens the WebSocket:
 
 1. **Handshake.** Twilio signs the `wss://` URL (no body) in `X-Twilio-Signature`. The route
    verifies it with `RequestValidator` against the URL built from `PUBLIC_BASE_URL`, accepting the
-   URL with or without a trailing `/` (the docs do not say which form is signed), and closes with
-   code 1008 (policy violation) before accepting otherwise.
+   URL with or without a trailing `/` (the docs do not say which form is signed), and rejects the
+   handshake before accepting otherwise (HTTP 403 on a real server; close 1008 in TestClient).
 2. `setup`: the two parameters bind the session to the conversation; it must exist and be a voice
    conversation, else the session ends. `from`, `callerName` and the other caller fields are ignored.
 3. `prompt`: acted on only when `last` is true. The turn runs in a threadpool
@@ -355,7 +358,8 @@ the output format of the model, so nothing is transcoded.
 
 `VOICE_GREETING` is the first thing the caller hears (the model is told to say it word for word);
 `VOICE_LANGUAGE`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` are for
-the other modes and ignored here.
+the other modes and ignored here (`VOICE_LANGUAGE` and `VOICE_LINK_PHRASE` too: the model speaks
+directly, so no text is formatted).
 
 #### What happens in a call
 
@@ -364,7 +368,8 @@ the other modes and ignored here.
 WebSocket.
 
 1. **Handshake.** The `wss://` URL is signed like the relay's: verified against `PUBLIC_BASE_URL`
-   with or without a trailing `/`, closed with 1008 before accepting otherwise.
+   with or without a trailing `/`, handshake rejected before accepting otherwise (HTTP 403 on a
+   real server; close 1008 in TestClient).
 2. **`start`** binds the session to the conversation (it must exist and be a voice conversation,
    else the call ends), opens `wss://api.openai.com/v1/realtime?model=...` with the key as a bearer
    token and sends `session.update`: `audio/pcmu` both ways, server-side voice detection

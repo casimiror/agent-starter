@@ -112,7 +112,10 @@ descriptions) as separate PRs. Never run it in CI.
 Skip if the project is web only. Otherwise run `/new-channel` for the channels chosen in step 2: it
 sets `CHANNELS` and the voice settings, completes the Channels section of `plan.md` and guides the
 local Twilio test. Do it before `/deploy-setup`, which checks the channels against the host. The
-agent and its prompt stay the same on every channel.
+prompt, tools and guardrail classes stay the same on every channel. In realtime voice there is no
+LangGraph graph: input guardrails run on the transcript before the model answers, output
+guardrails run on the reply's transcript and can only cut audio, and `format_for_speech` does not
+apply.
 
 ## 8. Deploy and hand off
 

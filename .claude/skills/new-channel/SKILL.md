@@ -12,8 +12,11 @@ skill decides which channels the project wants, configures them and walks the us
 provider setup. Read `docs/channels.md` first (setup steps, variables, limits per channel and
 mode), then `plan.md`, `docs/deployment.md` and `.env.example`.
 
-**The agent and its prompt are not changed per channel.** Same graph, same prompt, same tools, same
-guardrails everywhere. The only per-channel text is the voice greeting and link phrase. If a
+**The agent and its prompt are not changed per channel.** Same prompt, tools and guardrail classes
+on every channel. In realtime voice there is no LangGraph graph: input guardrails run on the
+transcript before the model answers, output guardrails run on the reply's transcript and can only
+cut audio, and `format_for_speech` does not apply. The only per-channel text is the voice greeting
+and link phrase (relay and gather). If a
 channel seems to need a different answer style, fix the shared prompt or say it is a limit; never
 fork the agent. Do not change backend behaviour in this skill.
 
@@ -35,8 +38,8 @@ Only ask what `plan.md` and `$ARGUMENTS` leave open.
 1. **Which channels?** (multiSelect) WhatsApp, Voice. The web UI is always on.
 2. If Voice, **"Which kind of voice?"**:
    1. **ConversationRelay (Recommended)**: `VOICE_MODE=relay`. Near real time with interruptions;
-      Twilio does the speech, our same agent answers text, so the same prompt and guardrails apply
-      and any text LLM works, Claude included. Needs a host that keeps WebSockets open.
+      Twilio does the speech, our same agent graph answers text, so the same prompt and guardrails
+      apply and any text LLM works, Claude included. Needs a host that keeps WebSockets open.
    2. **Speech-to-speech realtime**: `VOICE_MODE=realtime`. The most natural. OpenAI Realtime only
       (Claude has no audio models). Guardrails act on transcripts, so a few words can be heard
       before a block takes effect. About US$0.10 per minute with `gpt-realtime-2.1` (the mini is
@@ -66,10 +69,10 @@ Write these in `.env` (yourself, they are not secrets) and, where they are proje
 the new defaults in `.env.example`:
 
 - `CHANNELS` (e.g. `web,whatsapp,voice`).
-- Voice: `VOICE_MODE`, `VOICE_LANGUAGE`, and `VOICE_GREETING` and `VOICE_LINK_PHRASE` written in the
-  project's language and tone (take them from `plan.md` and `backend/app/agents/prompts/
-  assistant.md`; the greeting is the first thing the caller hears, the link phrase replaces any URL,
-  e.g. "You'll find the link in our chat or on our website."). Relay: `VOICE_TTS_PROVIDER`,
+- Voice: `VOICE_MODE`, and `VOICE_GREETING` written in the project's language and tone (take it
+  from `plan.md` and `backend/app/agents/prompts/assistant.md`; it is the first thing the caller
+  hears). `VOICE_LANGUAGE` and `VOICE_LINK_PHRASE` (replaces any URL, e.g. "You'll find the link in
+  our chat or on our website.") apply **only to relay and gather**; realtime ignores both. Relay: `VOICE_TTS_PROVIDER`,
   `VOICE_VOICE`, `VOICE_TRANSCRIPTION_PROVIDER` if not the defaults. Realtime: `VOICE_REALTIME_MODEL`.
   Adjust `RATE_LIMIT_WHATSAPP`, `RATE_LIMIT_VOICE` and `VOICE_MAX_CALL_SECONDS` only if `plan.md`
   asks for it.
@@ -118,8 +121,10 @@ Do the steps you can, and tell the user exactly what to do in the Twilio console
    - A price question the project blocks (`NoInventedPricesGuardrail`).
    - A prompt-injection attempt ("ignore your instructions and ..."): refused.
    - WhatsApp: send a photo or a voice note: the canned "I can only read text messages" reply.
-   - Voice: interrupt the reply by talking over it; and listen for the link phrase where a reply
-     would have had a URL.
+   - Voice: interrupt the reply by talking over it. Relay and gather: listen for the link phrase
+     where a reply would have had a URL. Realtime has no link phrase: the test is that the bot does
+     not read links aloud, and that a URL outside `ALLOWED_LINKS` is blocked (the reply is cut and
+     the safe text is said).
    - A follow-up in the same conversation ("and what about the second one?"): WhatsApp keeps the
      conversation for 24 h; each call is one conversation.
    - In Langfuse: the trace carries the tag `channel:whatsapp` or `channel:voice` and a UUID as the
@@ -130,8 +135,8 @@ Do the steps you can, and tell the user exactly what to do in the Twilio console
    - **403**: the signature did not verify. The URL Twilio signed differs from `PUBLIC_BASE_URL` +
      path: check the scheme (`https`), the domain, no trailing slash in `PUBLIC_BASE_URL`, and that
      `TWILIO_AUTH_TOKEN` is the account's current token.
-   - **Voice WebSocket closes with 1008**: the handshake signature failed; same cause as the 403,
-     for the `wss://` URL. Check `PUBLIC_BASE_URL`.
+   - **Voice WebSocket handshake rejected** (HTTP 403 on a real server; close 1008 in TestClient):
+     the handshake signature failed; same cause as the 403, for the `wss://` URL. Check `PUBLIC_BASE_URL`.
    - **Silence or an error message after the greeting** (relay): the AI/ML addendum is not accepted,
      or the TTS voice does not exist for that provider and language.
    - **No reply on WhatsApp but the webhook answered 200**: the sandbox join expired (72 h), the
