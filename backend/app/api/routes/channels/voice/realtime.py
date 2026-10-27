@@ -13,9 +13,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
-from app.api.deps import get_realtime_connector, get_realtime_voice_service
+from app.api.deps import get_realtime_voice_service, get_voice_models
 from app.api.routes.channels.twilio_security import handshake_valid
-from app.clients.openai_realtime import RealtimeConnector
+from app.clients.voice_models.base import VoiceModelProvider
 from app.core.config import Settings, get_settings
 from app.services.channels.voice import twiml as voice_twiml
 from app.services.channels.voice.realtime.service import RealtimeVoiceService
@@ -29,7 +29,7 @@ router = APIRouter(tags=["voice"])
 async def stream_socket(
     websocket: WebSocket,
     service: Annotated[RealtimeVoiceService, Depends(get_realtime_voice_service)],
-    connector: Annotated[RealtimeConnector, Depends(get_realtime_connector)],
+    voice_models: Annotated[list[VoiceModelProvider], Depends(get_voice_models)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
     # The handshake has no body: Twilio signs the wss URL alone. Rejected before accepting, so
@@ -60,7 +60,7 @@ async def stream_socket(
 
     session = RealtimeSession(
         service,
-        connector,
+        voice_models,
         receive,
         websocket.send_json,
         settings.voice_max_call_seconds,

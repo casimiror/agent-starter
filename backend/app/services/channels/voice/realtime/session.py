@@ -1,35 +1,35 @@
-"""Voice, `VOICE_MODE=realtime`: Twilio Media Streams on one side, a speech-to-speech model (OpenAI
-Realtime) on the other, and this session in between. The audio never touches the agent graph: the
-model hears and speaks by itself, so what the graph gives the text channels (prompt, tools,
-guardrails, history) is applied here around the model instead (`RealtimeVoiceService`).
+"""Voice, `VOICE_MODE=realtime`: Twilio Media Streams on one side, a speech-to-speech model on the
+other, and this session in between. The audio never touches the agent graph: the model hears and
+speaks by itself, so what the graph gives the text channels (prompt, tools, guardrails, history)
+is applied here around the model instead (`RealtimeVoiceService`).
 
-No socket code: the route hands in `receive`/`send` for the Twilio WebSocket and the connector
-opens the model's. Tests use plain dicts and fakes.
+No socket code and no provider vocabulary: the route hands in `receive`/`send` for the Twilio
+WebSocket, and the `VoiceModelProvider`s (app/clients/voice_models/: the primary, then the
+fallbacks, tried in order as the call starts) open the model's connection, which speaks the
+neutral events and commands of `voice_models/base.py`. Tests use plain dicts and a fake provider.
 
 How a call flows:
 
-- Twilio `start` binds the session to the conversation, opens the model connection and sends
-  `session.update` (Twilio's mu-law both ways, the agent's prompt and tools).
-- Caller audio (`media`) goes to `input_audio_buffer.append`; model audio
-  (`response.output_audio.delta`) goes back as `media` plus a `mark` per chunk. Twilio echoes a mark
-  when that chunk has *played*, which is how we know how much of a reply the caller heard.
-- The server's VAD only detects turns: `create_response` is off, so every `response.create` is
-  ours. When the caller's turn is committed (`input_audio_buffer.committed`) we wait for its
-  transcript (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`), run the input guardrails and only then ask for
-  the answer. A blocked transcript never reaches the model: we have it say the canned text. If the
+- Twilio `start` binds the session to the conversation, opens the model connection and configures
+  it with the agent's prompt and tools (`configure`).
+- Caller audio (`media`) goes to the model (`append_audio`); model audio (`AudioChunk`) goes back
+  as `media` plus a `mark` per chunk. Twilio echoes a mark when that chunk has *played*, which is
+  how we know how much of a reply the caller heard.
+- The model's turn detection only detects turns: it does not answer, so every `respond` / `say` is
+  ours. When the caller's turn ends (`UserTurnEnded`) we wait for its transcript
+  (`VOICE_REALTIME_TRANSCRIPT_WAIT_MS`), run the input guardrails and only then ask for the
+  answer. A blocked transcript never reaches the model: we have it say the canned text. If the
   transcript is late or fails, we answer anyway (the call must not stall) and the guardrail runs
   when the transcript lands, as an output-style cut.
-- Barge-in (`input_audio_buffer.speech_started`): `interrupt_response` is on, so the server cancels
-  the reply by itself; we also send Twilio `clear` to drop what is still queued, and
-  `conversation.item.truncate` to tell the model how much was actually played.
-- The model's function calls run the agent's tools in a thread and their results go back as
-  `function_call_output` + `response.create`.
+- Barge-in (`CallerSpeaking`): the model cancels the reply by itself; we also send Twilio `clear`
+  to drop what is still queued, and `truncate` to tell the model how much was actually played.
+- The model's tool calls run the agent's tools in a thread and their results go back as
+  `tool_result` + `respond`.
 - Output guardrails run on the reply's transcript, after the audio may have started: a violation
   cancels the reply, drops the queued audio and has the model say the guardrail's canned text.
-
-Event and error names marked "unverified" below come from the API reference as summarised, not from
-a live session: check them against a real call before relying on them.
 - A turn is stored (`messages`, one Langfuse trace) once its reply has been fully heard or cut.
+
+What is unverified lives in the provider modules, next to the wire names it concerns.
 """
 
 import asyncio
@@ -37,13 +37,35 @@ import base64
 import logging
 import re
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from app.clients.openai_realtime import RealtimeConnection, RealtimeConnector, RealtimeError
+from app.clients.voice_models.base import (
+    AssistantTranscriptDelta,
+    AssistantTranscriptDone,
+    AudioChunk,
+    CallerSpeaking,
+    ModelError,
+    ModelEvent,
+    ResponseDone,
+    ResponseStarted,
+    SessionReady,
+    ToolCall,
+    UserTranscript,
+    UserTranscriptFailed,
+    UserTurnEnded,
+    VoiceModelConnection,
+    VoiceModelError,
+    VoiceModelProvider,
+)
 from app.guardrails.base import GuardrailResult
+from app.services.channels.voice.realtime.audio import (
+    AudioTranscoder,
+    PassthroughTranscoder,
+    transcoder_for,
+)
 from app.services.channels.voice.realtime.service import RealtimeVoiceService
 from app.services.channels.voice.service import VoiceCall
 
@@ -55,16 +77,7 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 # Mu-law at 8 kHz is one byte per sample: 8 bytes per millisecond of audio.
 BYTES_PER_MS = 8
 
-# Errors that mean the model session can't go on. Matched on `type`/`code` of the `error` event;
-# anything else is logged and the call goes on (a failed cancel or truncate is routine). Names are
-# from the API reference as summarised; an error before `session.updated` is always fatal.
-FATAL_ERROR_TYPES = {"server_error", "authentication_error", "insufficient_quota"}
-FATAL_ERROR_CODES = {"invalid_api_key", "insufficient_quota", "session_expired", "model_not_found"}
 MAX_ERRORS = 10  # a connection that keeps failing is not worth keeping
-# The error code of a `response.create` sent while another response is still active. UNVERIFIED
-# name: if the API words it differently the call still works (the error is logged and the flags
-# are reset); only the automatic retry below does not happen.
-ACTIVE_RESPONSE_CODES = {"conversation_already_has_active_response"}
 
 
 def chunk_ms(payload: str) -> float:
@@ -93,13 +106,6 @@ def spoken_prefix(text: str, played_ms: float, sent_ms: float) -> str:
     if end < len(text) and not text[end].isspace():
         head = head.rpartition(" ")[0]
     return head.strip()
-
-
-def say_instructions(text: str) -> str:
-    return (
-        "Say exactly the following to the caller, word for word, and nothing else. "
-        f"Do not add, explain or call tools: {text}"
-    )
 
 
 @dataclass
@@ -141,19 +147,20 @@ class RealtimeSession:
     def __init__(
         self,
         service: RealtimeVoiceService,
-        connector: RealtimeConnector,
+        models: Sequence[VoiceModelProvider],
         receive: Receive,
         send: Send,
         max_seconds: float,
         transcript_wait_s: float = 1.5,
     ) -> None:
+        self._models = models  # the primary first, then the fallbacks
+        self._audio: AudioTranscoder = PassthroughTranscoder()  # set by the model that connects
         self._transcript_wait_s = transcript_wait_s
         # item_id of a committed caller turn -> the timeout that answers without its transcript.
         self._waiting: dict[str, asyncio.Task] = {}
         self._answer_queued = False  # an answer request sits in `_says`
         self._creating: tuple[str | None, bool] | None = None  # the `_says` entry just sent
         self._service = service
-        self._connector = connector
         self._receive = receive
         self._send = send
         self._max_seconds = max_seconds
@@ -162,22 +169,22 @@ class RealtimeSession:
         self._tasks: list[asyncio.Task] = []
         self._records: set[asyncio.Task] = set()
         self._record_lock = asyncio.Lock()  # turns are stored in order
-        self._conn: RealtimeConnection | None = None
+        self._conn: VoiceModelConnection | None = None
         self.call: VoiceCall | None = None
         self.call_sid = ""
         self._stream_sid = ""
-        self._ready = False  # the model accepted our session.update
+        self._ready = False  # the model accepted our configuration
 
         self._responses: dict[str, _Response] = {}
         self._latest: _Response | None = None
         self._active_id: str | None = None  # the response being generated
-        self._awaiting_created = False  # we sent response.create and no response.created yet
+        self._awaiting_created = False  # we asked for a response and none has started yet
         self._next_canned = False
         self._pending_users: list[str] = []  # transcripts that arrived before their response
         self._continue: _Turn | None = None  # the turn a tool follow-up belongs to
         self._followup: _Turn | None = None
         # What to ask the model next: (text to say, canned) or (None, False) for "answer the
-        # caller" (a plain response.create).
+        # caller" (a plain `respond`).
         self._says: deque[tuple[str | None, bool]] = deque()
         self._calls: set[str] = set()
         self._tools_running = 0
@@ -275,21 +282,43 @@ class RealtimeSession:
             self._finished.set()
             return
         self.call = call
-        try:
-            self._conn = await self._connector.connect()
-        except RealtimeError:
+        self._conn = await self._connect_first()
+        if self._conn is None:
             self._end("realtime connection failed")
             return
-        log.info("voice realtime connected", extra=self._fields())
-        if not await self._to_openai(self._service.session_update()):
+        spec = self._service.session_spec()
+        if not await self._to_model(lambda conn: conn.configure(spec)):
             return
-        self._tasks.append(asyncio.create_task(self._openai_loop()))
+        self._tasks.append(asyncio.create_task(self._model_loop()))
+
+    async def _connect_first(self) -> VoiceModelConnection | None:
+        """Open the first model that connects, in order. Only here, as the call starts: once a
+        model is connected the call never switches (the voice would change mid-sentence)."""
+        failed: list[str] = []
+        for model in self._models:
+            try:
+                audio = transcoder_for(model.audio_format)  # NotImplementedError: no transcoder
+                conn = await model.connect()
+            except (VoiceModelError, NotImplementedError) as exc:
+                kind = getattr(exc, "kind", "") or type(exc).__name__
+                failed.append(f"{model.name}:{model.model}:{kind}")
+                continue
+            self._audio = audio
+            extra = {**self._fields(), "provider": model.name, "model": model.model}
+            if failed:
+                # Provider, model and error type of each failure: never a key or str(exc).
+                log.warning("voice model fallback used", extra={**extra, "failed": failed})
+            log.info("voice realtime connected", extra=extra)
+            return conn
+        log.error("voice model connection failed", extra={**self._fields(), "failed": failed})
+        return None
 
     async def _on_media(self, message: dict[str, Any]) -> None:
         payload = (message.get("media") or {}).get("payload")
-        # Until session.updated the model would read the audio in its default format.
+        # Until the model is ready it would read the audio in its default format.
         if payload and self._ready:
-            await self._to_openai({"type": "input_audio_buffer.append", "audio": payload})
+            audio = self._audio.to_model(payload)
+            await self._to_model(lambda conn: conn.append_audio(audio))
 
     async def _on_mark(self, message: dict[str, Any]) -> None:
         entry = self._marks.pop(str((message.get("mark") or {}).get("name")), None)
@@ -307,11 +336,12 @@ class RealtimeSession:
             log.info("voice twilio send failed", extra={"error": type(exc).__name__})
             self._finished.set()
 
-    async def _to_openai(self, event: dict[str, Any]) -> bool:
+    async def _to_model(self, command: Callable[[VoiceModelConnection], Awaitable[None]]) -> bool:
+        """Give the model one command; False (and the call ends) when its connection is gone."""
         if self._conn is None:
             return False
         try:
-            await self._conn.send(event)
+            await command(self._conn)
         except Exception as exc:
             log.warning("voice realtime send failed", extra={"error": type(exc).__name__})
             self._end("realtime connection lost")
@@ -320,7 +350,7 @@ class RealtimeSession:
 
     # --- the model ---------------------------------------------------------------------------
 
-    async def _openai_loop(self) -> None:
+    async def _model_loop(self) -> None:
         assert self._conn is not None
         try:
             while True:
@@ -339,67 +369,52 @@ class RealtimeSession:
             log.error("voice realtime loop failed", extra={"error": type(exc).__name__})
             self._finished.set()
 
-    async def _on_event(self, event: dict[str, Any]) -> None:
-        kind = event.get("type")
-        if kind == "response.output_audio.delta":
+    async def _on_event(self, event: ModelEvent) -> None:
+        if isinstance(event, AudioChunk):
             await self._on_audio(event)
-        elif kind == "response.output_audio_transcript.delta":
+        elif isinstance(event, AssistantTranscriptDelta):
             await self._on_transcript_delta(event)
-        elif kind == "response.output_audio_transcript.done":
+        elif isinstance(event, AssistantTranscriptDone):
             await self._on_transcript_done(event)
-        elif kind == "input_audio_buffer.speech_started":
+        elif isinstance(event, CallerSpeaking):
             if self._marks:  # something is still playing: the caller talks over it
                 await self._clear_playback()
-        elif kind in ("input_audio_buffer.committed", "input_audio_buffer.speech_stopped"):
-            # UNVERIFIED names: either one means the caller's turn ended (both carry `item_id`;
-            # the first to arrive starts the wait, so a missing one can't leave the call silent).
-            await self._on_committed(str(event.get("item_id") or ""))
-        elif kind == "conversation.item.input_audio_transcription.completed":
-            await self._on_user_transcript(
-                str(event.get("transcript") or "").strip(), str(event.get("item_id") or "")
-            )
-        elif kind == "conversation.item.input_audio_transcription.failed":  # UNVERIFIED name
-            await self._on_transcript_failed(str(event.get("item_id") or ""))
-        elif kind == "response.function_call_arguments.done":
-            self._on_call(event.get("response_id"), event)
-        elif kind == "response.created":
-            self._on_created(event.get("response") or {})
-        elif kind == "response.done":
-            await self._on_done(event.get("response") or {})
-        elif kind == "response.cancelled":
-            # A cancellation is reported by this event or by response.done with status
-            # "cancelled"; whichever comes first closes the response, the other is ignored.
-            response_id = event.get("response_id") or (event.get("response") or {}).get("id")
-            await self._on_done({"id": response_id, "status": "cancelled"})
-        elif kind == "session.updated":
+        elif isinstance(event, UserTurnEnded):
+            await self._on_committed(event.item_id)
+        elif isinstance(event, UserTranscript):
+            await self._on_user_transcript(event.text, event.item_id)
+        elif isinstance(event, UserTranscriptFailed):
+            await self._on_transcript_failed(event.item_id)
+        elif isinstance(event, ToolCall):
+            self._on_call(event)
+        elif isinstance(event, ResponseStarted):
+            self._on_created(event.response_id)
+        elif isinstance(event, ResponseDone):
+            await self._on_done(event)
+        elif isinstance(event, SessionReady):
             self._ready = True
             if self._service.greeting:
                 self._says.append((self._service.greeting, False))
             await self._pump()
-        elif kind == "error":
-            await self._on_error(event.get("error") or {})
+        elif isinstance(event, ModelError):
+            await self._on_error(event)
 
-    async def _on_error(self, error: dict[str, Any]) -> None:
-        kind, code = str(error.get("type") or ""), str(error.get("code") or "")
+    async def _on_error(self, error: ModelError) -> None:
         # Type and code only: the message can quote what the caller said.
         log.warning(
-            "voice realtime error", extra={**self._fields(), "error_type": kind, "error_code": code}
+            "voice realtime error",
+            extra={**self._fields(), "error_type": error.kind, "error_code": error.code},
         )
         self._errors += 1
-        if (
-            not self._ready
-            or kind in FATAL_ERROR_TYPES
-            or code in FATAL_ERROR_CODES
-            or self._errors > MAX_ERRORS
-        ):
+        if not self._ready or error.fatal or self._errors > MAX_ERRORS:
             self._end("realtime error")
             return
-        # A response.create that failed will never get its response.created: forget it, and the
-        # turn it was continuing (else the next response would be glued to a stale turn).
+        # A request that failed will never get its response: forget it, and the turn it was
+        # continuing (else the next response would be glued to a stale turn).
         self._awaiting_created = False
         stale_turn, self._continue = self._continue, None
         sent, self._creating = self._creating, None
-        if code in ACTIVE_RESPONSE_CODES:
+        if error.active_response:
             # We asked while a response was still active: ask again once it is done (`_on_done`
             # pumps). Dropping the request would leave the caller unanswered.
             if stale_turn is not None:
@@ -415,10 +430,7 @@ class RealtimeSession:
     def _response(self, response_id: Any) -> _Response | None:
         return self._responses.get(str(response_id)) if response_id else None
 
-    def _on_created(self, data: dict[str, Any]) -> None:
-        response_id = str(data.get("id") or "")
-        if not response_id:
-            return
+    def _on_created(self, response_id: str) -> None:
         self._awaiting_created = False
         self._creating = None
         if self._continue is not None:  # the follow-up to a tool call: same turn
@@ -432,12 +444,12 @@ class RealtimeSession:
         self._latest = resp
         self._active_id = response_id
 
-    async def _on_audio(self, event: dict[str, Any]) -> None:
-        resp = self._response(event.get("response_id"))
-        payload = event.get("delta")
-        if resp is None or resp.cut or not payload:
+    async def _on_audio(self, event: AudioChunk) -> None:
+        resp = self._response(event.response_id)
+        if resp is None or resp.cut or not event.audio:
             return
-        resp.item_id = str(event.get("item_id") or resp.item_id or "") or None
+        resp.item_id = event.item_id or resp.item_id or None
+        payload = self._audio.to_twilio(event.audio)
         name = f"m{self._seq}"
         self._seq += 1
         ms = chunk_ms(payload)
@@ -451,20 +463,20 @@ class RealtimeSession:
             {"event": "mark", "streamSid": self._stream_sid, "mark": {"name": name}}
         )
 
-    async def _on_transcript_delta(self, event: dict[str, Any]) -> None:
-        resp = self._response(event.get("response_id"))
+    async def _on_transcript_delta(self, event: AssistantTranscriptDelta) -> None:
+        resp = self._response(event.response_id)
         if resp is None:
             return
         # Kept after a cut too: it is what the played share of the audio is measured against.
-        resp.text += str(event.get("delta") or "")
+        resp.text += event.text
         if not resp.canned and not resp.cut:
             await self._check_output(resp, complete_words(resp.text))
 
-    async def _on_transcript_done(self, event: dict[str, Any]) -> None:
-        resp = self._response(event.get("response_id"))
+    async def _on_transcript_done(self, event: AssistantTranscriptDone) -> None:
+        resp = self._response(event.response_id)
         if resp is None:
             return
-        resp.text = str(event.get("transcript") or resp.text)
+        resp.text = event.text or resp.text
         if not resp.canned and not resp.cut:
             await self._check_output(resp, resp.text)
 
@@ -479,7 +491,7 @@ class RealtimeSession:
             await self._block(resp, result)
 
     async def _on_committed(self, item_id: str) -> None:
-        """The caller's turn ended: the model will not answer by itself (`create_response` is
+        """The caller's turn ended: the model will not answer by itself (automatic responses are
         off), so wait for the transcript, check it, and only then ask for the answer."""
         if not item_id or item_id in self._waiting or not self._ready:
             return
@@ -505,7 +517,7 @@ class RealtimeSession:
             await self._request_answer()  # nothing to check: answer rather than stall
 
     async def _request_answer(self) -> None:
-        """Queue one `response.create` for the caller's turn (several requests that wait behind a
+        """Queue one `respond` for the caller's turn (several requests that wait behind a
         busy response collapse into one: the model hears all of the audio anyway)."""
         if not self._answer_queued:
             self._answer_queued = True
@@ -565,7 +577,7 @@ class RealtimeSession:
         resp.turn.blocked_by = result.reason
         resp.turn.replacement = result.replacement or ""
         if not resp.done:
-            await self._to_openai({"type": "response.cancel"})
+            await self._to_model(lambda conn: conn.cancel())
         await self._clear_playback(extra=resp)
 
     async def _clear_playback(self, extra: _Response | None = None) -> None:
@@ -583,28 +595,21 @@ class RealtimeSession:
             await self._to_twilio({"event": "clear", "streamSid": self._stream_sid})
         for resp in affected:
             if resp.item_id and resp.sent_ms > 0:
-                await self._to_openai(
-                    {
-                        "type": "conversation.item.truncate",
-                        "item_id": resp.item_id,
-                        "content_index": 0,
-                        "audio_end_ms": int(resp.played_ms),
-                    }
-                )
+                item, ms = resp.item_id, int(resp.played_ms)
+                await self._to_model(lambda conn, item=item, ms=ms: conn.truncate(item, ms))
         for resp in affected:
             await self._settle(resp)
 
-    async def _on_done(self, data: dict[str, Any]) -> None:
-        resp = self._response(data.get("id"))
+    async def _on_done(self, event: ResponseDone) -> None:
+        resp = self._response(event.response_id)
         if resp is None or resp.done:
             return
         resp.done = True
-        resp.status = str(data.get("status") or "completed")
-        for item in data.get("output") or []:
-            if item.get("type") == "function_call":
-                self._on_call(resp.id, item)
-            elif item.get("type") == "message" and not resp.item_id:
-                resp.item_id = str(item.get("id") or "") or None
+        resp.status = event.status
+        for call in event.tool_calls:
+            self._on_call(call)
+        if event.item_id and not resp.item_id:
+            resp.item_id = event.item_id
         if self._active_id == resp.id:
             self._active_id = None
         await self._settle(resp)
@@ -637,36 +642,29 @@ class RealtimeSession:
 
     # --- tools -------------------------------------------------------------------------------
 
-    def _on_call(self, response_id: Any, data: dict[str, Any]) -> None:
-        call_id = str(data.get("call_id") or "")
-        resp = self._response(response_id)
-        if not call_id or call_id in self._calls or resp is None:
+    def _on_call(self, call: ToolCall) -> None:
+        resp = self._response(call.response_id)
+        if not call.call_id or call.call_id in self._calls or resp is None:
             return
-        self._calls.add(call_id)
+        self._calls.add(call.call_id)
         resp.has_calls = True
         self._tools_running += 1
-        task = asyncio.create_task(
-            self._run_tool(resp.turn, call_id, str(data.get("name") or ""), data.get("arguments"))
-        )
+        task = asyncio.create_task(self._run_tool(resp.turn, call))
         self._tasks.append(task)
 
-    async def _run_tool(self, turn: _Turn, call_id: str, name: str, arguments: Any) -> None:
+    async def _run_tool(self, turn: _Turn, call: ToolCall) -> None:
         assert self.call is not None
+        name = call.name
         try:
             output = await asyncio.to_thread(
-                self._service.run_tool, name, str(arguments or ""), self.call.conversation_id
+                self._service.run_tool, name, call.arguments, self.call.conversation_id
             )
         except Exception as exc:  # run_tool does not raise; this is a bug in it
             log.error("voice tool crashed", extra={"tool": name, "error": type(exc).__name__})
             output = "TOOL_ERROR: the tool failed."
         turn.tools.append(name)
         turn.results.append(f"<{name}>\n{output}")
-        await self._to_openai(
-            {
-                "type": "conversation.item.create",
-                "item": {"type": "function_call_output", "call_id": call_id, "output": output},
-            }
-        )
+        await self._to_model(lambda conn: conn.tool_result(call.call_id, output))
         self._tools_running -= 1
         self._followup = turn
         await self._pump()
@@ -674,7 +672,7 @@ class RealtimeSession:
     # --- what we say -------------------------------------------------------------------------
 
     async def _pump(self) -> None:
-        """Send the next `response.create`: only when no response is being generated (the API
+        """Send the next `respond` / `say`: only when no response is being generated (the API
         refuses a second) and every tool of the turn has answered."""
         if self._active_id is not None or self._awaiting_created or self._tools_running:
             return
@@ -696,9 +694,7 @@ class RealtimeSession:
                 return
             self._followup = None  # a canned reply replaces whatever would have followed
             self._next_canned = canned
-            await self._create(
-                {"instructions": say_instructions(text), "tool_choice": "none"}, sent=entry
-            )
+            await self._create(say=text, sent=entry)
         elif self._followup is not None:
             turn, self._followup = self._followup, None
             if turn.blocked_by is not None:
@@ -707,19 +703,20 @@ class RealtimeSession:
 
     async def _create(
         self,
-        response: dict[str, Any] | None = None,
+        say: str | None = None,
         turn: _Turn | None = None,
         sent: tuple[str | None, bool] | None = None,
     ) -> None:
-        """Send one `response.create`. `turn` is the turn it continues (a tool follow-up);
-        `sent` is what to queue again if the API refuses it for an active response."""
+        """Ask for one response: `say` the given text, or `respond` to the caller. `turn` is the
+        turn it continues (a tool follow-up); `sent` is what to queue again if the model refuses
+        it for an active response."""
         self._continue = turn
         self._creating = sent if sent is not None else ((None, False) if turn is None else None)
         self._awaiting_created = True
-        event: dict[str, Any] = {"type": "response.create"}
-        if response is not None:
-            event["response"] = response
-        await self._to_openai(event)
+        if say is not None:
+            await self._to_model(lambda conn: conn.say(say))
+        else:
+            await self._to_model(lambda conn: conn.respond())
 
     # --- history -----------------------------------------------------------------------------
 

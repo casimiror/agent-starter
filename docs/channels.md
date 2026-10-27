@@ -207,7 +207,9 @@ Code: routes in `app/api/routes/channels/voice/` (`incoming.py` for `/incoming`,
 `gather.py`, `realtime.py`; `__init__.py` assembles the router); services in
 `app/services/channels/voice/`: `VoiceService` (`service.py`), `RelaySession` (`relay.py`), TwiML
 builders (`twiml.py`), the speech formatter (`format.py`) and, in `realtime/`, `RealtimeVoiceService`
-(`service.py`) and `RealtimeSession` (`session.py`). Tests mirror it in `tests/channels/voice/`.
+(`service.py`) and `RealtimeSession` (`session.py`); the voice model itself in
+`app/clients/voice_models/`. Tests mirror it in `tests/channels/voice/` and
+`tests/clients/voice_models/`.
 
 ### Setup
 
@@ -335,6 +337,63 @@ graph gives the text channels (below).
 Audio goes through unchanged: Twilio's mu-law (`audio/pcmu`) is configured as both the input and
 the output format of the model, so nothing is transcoded.
 
+#### The voice model is a provider
+
+The agent (prompt, tools, guardrails) is defined once and shared with every channel; the realtime
+path gets it from `RealtimeVoiceService` exactly as before. **Which voice model speaks it is a
+separate thing**, built like this (`app/clients/voice_models/`):
+
+| File | What it is |
+| --- | --- |
+| `base.py` | The neutral vocabulary. Events the model tells us (`AudioChunk`, `AssistantTranscriptDelta/Done`, `CallerSpeaking`, `UserTurnEnded`, `UserTranscript`, `UserTranscriptFailed`, `ToolCall`, `ResponseStarted`, `ResponseDone`, `SessionReady`, `ModelError`) and the Protocols `VoiceModelProvider` (`name`, `model`, `audio_format`, `connect()`) and `VoiceModelConnection` (`configure`, `append_audio`, `respond`, `say`, `cancel`, `truncate`, `tool_result`, `receive`, `close`). |
+| `builder.py` | `VoiceModelBuilder(provider).with_model().with_api_key().with_voice().with_language().with_transcription_model().with_turn_detection().build()`. `build()` checks the provider's `required` fields and `voices` and raises a `ValueError` that says what is missing. |
+| `factory.py` | `VoiceModelFactory`: the registry (`{"openai": OpenAIRealtimeProvider}`), `register()` and `from_settings(settings)`, which builds the `VOICE_REALTIME_*` models through the builder. |
+| `openai.py` | `OpenAIRealtimeProvider`: the WebSocket, `session.update`, the client events behind each command and the translation of OpenAI's server events into neutral ones. Every OpenAI string and every `UNVERIFIED` marker lives here. |
+
+`RealtimeSession` speaks only the neutral events and commands (no OpenAI name appears under
+`services/`), so a provider change does not touch the bridge. `deps.py` wires
+`VoiceModelFactory.from_settings` into the session; `VOICE_REALTIME_PROVIDER` is a string checked
+against the registry (not a `Literal`, so a new provider is one registry line), and an unknown one
+stops the app at startup. Twilio Media Streams handling is unchanged.
+
+**Audio format.** Each provider declares an `audio_format`. If it is Twilio's (mu-law 8 kHz, the
+OpenAI case) the audio is passed through. Any other format needs a transcoder
+(`services/channels/voice/realtime/audio.py`); only the passthrough exists, so a provider with
+another format is skipped at connect time (`NotImplementedError` inside `transcoder_for`) until
+one is written. No `audioop`: it is gone from Python 3.13.
+
+**Fallbacks (`VOICE_REALTIME_FALLBACKS`)** apply only when a call starts: the session tries the
+primary model's `connect()` and, if it fails, each fallback in order. Once connected, a call never
+switches model: if the model drops mid-call, the call ends as it always did. A fallback is logged
+at WARNING (`voice model fallback used`) with the provider and model that answered and the
+provider, model and error type of each failure (never a key or the error text). **The voice stays
+the same within a call**: an entry `provider:model` inherits `VOICE_REALTIME_VOICE`, which its
+provider must have (checked at startup); an entry on another provider must name its voice,
+`provider:model:voice`, because voice catalogs differ. Choose one that sounds close to the primary
+one: the caller hears a different voice on the calls where the fallback is used. The transcription
+model and language settings are shared by all entries.
+
+#### How to add a voice model provider
+
+1. **Module.** `app/clients/voice_models/<provider>.py` with a class that declares `name`,
+   `required` (config fields it needs, e.g. `("model", "api_key", "voice")`), `voices` (its voice
+   names, or `None` to skip the check), `api_key_setting` / `api_key_env` (the `Settings` field and
+   env var of its key), `audio_format`, `model`, and `async connect()` returning a
+   `VoiceModelConnection` (raise `VoiceModelError` with the error *type* only on failure). The
+   constructor takes the `VoiceModelConfig` the builder collected. Translate its wire events into
+   the neutral ones and the neutral commands into its wire messages there, and nowhere else.
+2. **Registry.** One line in `_REGISTRY` in `factory.py`.
+3. **Audio format.** Twilio's mu-law 8 kHz needs nothing. Otherwise write the transcoder in
+   `audio.py` first.
+4. **Settings and key.** A key setting in `Settings` if it has none (and in `.env.example`). Choose
+   a voice from its catalog for `VOICE_REALTIME_VOICE` or the fallback entry.
+5. **Tests.** `tests/clients/voice_models/test_<provider>_provider.py`: the commands' exact JSON,
+   every event -> neutral event case and the connection against a local WebSocket server (never
+   the real service), plus a line in the factory tests. The bridge tests already run on a fake
+   provider.
+6. **`UNVERIFIED`.** Mark every event name, field and error code taken from documentation and not
+   from a real call, and say so in this section until a call has confirmed them.
+
 #### Setup
 
 1. As for the other modes: a Twilio number with **Voice**, **A call comes in** pointing at
@@ -350,8 +409,9 @@ the output format of the model, so nothing is transcoded.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `VOICE_REALTIME_PROVIDER` | `openai` | only `openai` exists. Gemini Live would be another connector behind `RealtimeConnector` (`app/clients/openai_realtime.py`); it is not built |
+| `VOICE_REALTIME_PROVIDER` | `openai` | a name in the registry of `app/clients/voice_models/factory.py`; only `openai` exists (see [the provider design](#the-voice-model-is-a-provider)); unknown stops the app at startup |
 | `VOICE_REALTIME_MODEL` | `gpt-realtime-2.1` | `gpt-realtime-2.1-mini` is the cheaper option |
+| `VOICE_REALTIME_FALLBACKS` | `[]` | JSON list of `"provider:model"` or `"provider:model:voice"`, tried in order only when a call starts and the primary can't connect |
 | `VOICE_REALTIME_VOICE` | `marin` | the model's voice; it can't change once the model has spoken in a call |
 | `VOICE_REALTIME_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | transcribes the caller; the transcript feeds the guardrails and the stored history |
 | `VOICE_REALTIME_TRANSCRIPT_WAIT_MS` | `1500` | how long the model's answer waits for the caller's transcript so the input guardrails run first; on timeout it answers anyway |
@@ -448,8 +508,8 @@ says aloud is caught only if its transcript contains a URL outside `ALLOWED_LINK
 only): the `create_response` / `interrupt_response` field names, the events
 `input_audio_buffer.committed`, `input_audio_buffer.speech_stopped` and
 `conversation.item.input_audio_transcription.failed`, and the error code
-`conversation_already_has_active_response`. They are marked `UNVERIFIED` in
-`app/services/channels/voice/realtime/session.py`. Check them with a real call before relying on the behaviour: if
+`conversation_already_has_active_response`, and the list of voice names. They are marked
+`UNVERIFIED` in `app/clients/voice_models/openai.py`. Check them with a real call before relying on the behaviour: if
 no turn-end event arrives, the call would not be answered.
 
 #### Costs

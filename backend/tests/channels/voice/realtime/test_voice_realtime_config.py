@@ -17,6 +17,7 @@ def _settings(**values) -> Settings:
 def test_realtime_defaults():
     s = _settings()
     assert s.voice_realtime_provider == "openai"
+    assert s.voice_realtime_fallbacks == []
     assert s.voice_realtime_model == "gpt-realtime-2.1"
     assert s.voice_realtime_voice == "marin"
     assert s.voice_realtime_transcription_model == "gpt-4o-mini-transcribe"
@@ -38,6 +39,22 @@ def test_realtime_voice_needs_the_openai_key():
     _settings(
         channels=["voice"], voice_mode="realtime", openai_api_key="sk-x", **BASE
     ).check_channels()
+
+
+def test_a_bad_fallback_entry_stops_the_app_at_startup():
+    with pytest.raises(ValueError, match="must be 'provider:model'"):
+        _settings(
+            channels=["voice"],
+            voice_mode="realtime",
+            openai_api_key="sk-x",
+            voice_realtime_fallbacks=["nonsense"],
+            **BASE,
+        ).check_channels()
+
+
+def test_the_fallbacks_come_from_a_json_list(monkeypatch):
+    monkeypatch.setenv("VOICE_REALTIME_FALLBACKS", '["openai:gpt-realtime-2.1-mini"]')
+    assert _settings().voice_realtime_fallbacks == ["openai:gpt-realtime-2.1-mini"]
 
 
 @pytest.mark.parametrize("mode", ["relay", "gather"])

@@ -106,10 +106,16 @@ class Settings(BaseSettings):
     voice_tts_provider: Literal["Google", "Amazon", "ElevenLabs"] = "ElevenLabs"
     voice_voice: str = ""  # empty: the provider's default voice
     voice_transcription_provider: Literal["Google", "Deepgram"] = "Deepgram"
-    # realtime only: a speech-to-speech model over Twilio Media Streams. One API key for every
-    # OpenAI use: OPENAI_API_KEY above (also what an `openai:` entry in LLM_FALLBACKS uses), so
+    # realtime only: a speech-to-speech model over Twilio Media Streams. A name in the registry of
+    # app/clients/voice_models/factory.py (a str, not a Literal, so a new provider is one registry
+    # line); an unknown one stops the app at startup. Each provider has its own key setting; the
+    # OpenAI one is OPENAI_API_KEY above (also what an `openai:` entry in LLM_FALLBACKS uses), so
     # there is a single place to set and rotate it.
-    voice_realtime_provider: Literal["openai"] = "openai"
+    voice_realtime_provider: str = "openai"
+    # Tried in order, only when a call starts and the primary cannot connect; a call never switches
+    # model once connected. "provider:model" (same provider as the primary: keeps its voice) or
+    # "provider:model:voice" (required for another provider: voice catalogs differ).
+    voice_realtime_fallbacks: list[str] = []
     # gpt-realtime-2.1-mini is the cheaper option.
     voice_realtime_model: str = "gpt-realtime-2.1"
     voice_realtime_voice: str = "marin"
@@ -152,6 +158,15 @@ class Settings(BaseSettings):
             raise ValueError(f"unknown channel {unknown}; allowed: {', '.join(CHANNEL_NAMES)}")
         return names or ["web"]
 
+    @field_validator("voice_realtime_provider")
+    @classmethod
+    def _known_voice_provider(cls, value: str) -> str:
+        # Late: the clients package is not a dependency of settings loading itself.
+        from app.clients.voice_models.factory import VoiceModelFactory
+
+        VoiceModelFactory.provider_class(value)  # ValueError for an unknown one
+        return value
+
     @property
     def langfuse_enabled(self) -> bool:
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
@@ -179,7 +194,10 @@ class Settings(BaseSettings):
             # token that verifies Twilio's calls. With whatsapp too, it is already required above.
             required.append(("TWILIO_AUTH_TOKEN", self.twilio_auth_token))
             if self.voice_mode == "realtime":
-                required.append(("OPENAI_API_KEY", self.openai_api_key))
+                from app.clients.voice_models.factory import VoiceModelFactory
+
+                provider = VoiceModelFactory.provider_class(self.voice_realtime_provider)
+                required.append((provider.api_key_env, getattr(self, provider.api_key_setting)))
         # A typo in a per-sender limit would otherwise fail on every message, not at startup.
         limit_settings = []
         if "whatsapp" in self.channels:
@@ -199,6 +217,12 @@ class Settings(BaseSettings):
                 f"CHANNELS enables {', '.join(self.extra_channels)} but {' and '.join(missing)} "
                 "is empty: set it in .env (docs/channels.md)"
             )
+        if "voice" in self.channels and self.voice_mode == "realtime":
+            # Builds the voice model once: a value its provider rejects (a voice it doesn't have)
+            # stops the app here, not on the first call.
+            from app.clients.voice_models.factory import VoiceModelFactory
+
+            VoiceModelFactory.from_settings(self)
 
 
 @lru_cache

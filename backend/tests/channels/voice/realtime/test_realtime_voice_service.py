@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT
 from app.agents.builder import PROMPTS_DIR
-from app.services.channels.voice.realtime.service import realtime_tools
+from app.clients.voice_models.factory import VoiceModelFactory
+from app.clients.voice_models.openai import session_update
+from app.services.channels.voice.realtime.service import tool_specs
 from tests.channels.voice.realtime.realtime_fakes import (
     FakeMessages,
     LookupArgs,
@@ -13,10 +15,18 @@ from tests.channels.voice.realtime.realtime_fakes import (
 from tests.channels.voice.voice_fakes import CALLER
 
 
+def session_update_for(ctx) -> dict:
+    """What OpenAI is sent on `configure`: the agent from the service, the model from the settings
+    (the same path `deps.py` takes)."""
+    (provider,) = VoiceModelFactory.from_settings(ctx.settings)
+    return session_update(provider._config, ctx.service.session_spec())
+
+
 def test_session_update_configures_twilio_audio_the_prompt_and_the_tools():
+    """No behavior change with OpenAI: the payload the agent produced before providers existed."""
     tool = make_lookup_tool()
     ctx = make_realtime_service([tool])
-    event = ctx.service.session_update()
+    event = session_update_for(ctx)
     session = event["session"]
 
     assert event["type"] == "session.update"
@@ -49,7 +59,7 @@ def test_the_session_uses_the_configured_model_voice_and_transcription():
     ctx = make_realtime_service(
         voice_realtime_voice="cedar", voice_realtime_transcription_model="whisper-1"
     )
-    session = ctx.service.session_update()["session"]
+    session = session_update_for(ctx)["session"]
     assert session["audio"]["output"]["voice"] == "cedar"
     assert session["audio"]["input"]["transcription"] == {"model": "whisper-1"}
     assert session["tools"] == []
@@ -59,10 +69,11 @@ def test_the_session_payload_has_no_personal_data():
     ctx = make_realtime_service([make_lookup_tool()])
     call = ctx.voice.service.start_call(CALLER, "CA1")
     ctx.service.record_turn(call, "hello", "hi", None, [])
-    assert CALLER not in str(ctx.service.session_update())
+    assert CALLER not in str(session_update_for(ctx))
+    assert CALLER not in str(ctx.service.session_spec())
 
 
-def test_realtime_tools_accept_a_dict_schema_and_no_schema():
+def test_tool_specs_accept_a_dict_schema_and_no_schema():
     class Bare:
         name, description, args_schema = "bare", "No args", None
 
@@ -70,9 +81,9 @@ def test_realtime_tools_accept_a_dict_schema_and_no_schema():
         name, description = "dict_tool", "Has a dict schema"
         args_schema = {"type": "object", "properties": {"q": {"type": "string"}}}
 
-    specs = realtime_tools([Bare(), Dict()])
-    assert specs[0]["parameters"] == {"type": "object", "properties": {}}
-    assert specs[1]["parameters"] == Dict.args_schema
+    specs = tool_specs([Bare(), Dict()])
+    assert specs[0].parameters == {"type": "object", "properties": {}}
+    assert specs[1].parameters == Dict.args_schema
 
 
 def test_a_tool_runs_with_the_conversation_in_its_config():

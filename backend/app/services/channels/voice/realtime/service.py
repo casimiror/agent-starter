@@ -2,9 +2,10 @@
 
 In `relay` and `gather` the agent graph answers every turn. In `realtime` the speech-to-speech
 model answers by itself, so this service gives it the same three things the graph has, taken from
-the same definitions: the prompt (as session `instructions`), the tools (as function tools) and the
-guardrails (run on transcripts). It also stores each finished turn in `messages`, as `ChatService`
-does, and traces it in Langfuse.
+the same definitions: the prompt (as the session's instructions), the tools (as neutral function
+specs) and the guardrails (run on transcripts). The model itself (which provider, voice, audio) is
+a `VoiceModelProvider`, built apart from the agent. It also stores each finished turn in
+`messages`, as `ChatService` does, and traces it in Langfuse.
 
 Blocking (database, tools, Langfuse): the session calls it from threads.
 """
@@ -18,6 +19,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
+from app.clients.voice_models.base import ToolSpec, VoiceSessionSpec
 from app.core import observability
 from app.core.observability import trace_turn
 from app.guardrails.base import Guardrail, GuardrailResult, run_guardrails
@@ -26,12 +28,9 @@ from app.services.channels.voice.service import VoiceCall, VoiceService
 
 log = logging.getLogger("app.voice")
 
-# Twilio's mu-law, 8 kHz: OpenAI takes and returns it as is, so the audio is never transcoded.
-AUDIO_FORMAT = {"type": "audio/pcmu"}
 
-
-def realtime_tools(tools: Sequence[BaseTool]) -> list[dict[str, Any]]:
-    """The agent's LangChain tools as Realtime function tools: same name, description and JSON
+def tool_specs(tools: Sequence[BaseTool]) -> tuple[ToolSpec, ...]:
+    """The agent's LangChain tools as neutral function specs: same name, description and JSON
     schema of the arguments the model sees in the text channels."""
     specs = []
     for tool in tools:
@@ -42,15 +41,8 @@ def realtime_tools(tools: Sequence[BaseTool]) -> list[dict[str, Any]]:
             parameters = schema
         else:
             parameters = schema.model_json_schema()
-        specs.append(
-            {
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": parameters,
-            }
-        )
-    return specs
+        specs.append(ToolSpec(tool.name, tool.description, parameters))
+    return tuple(specs)
 
 
 class RealtimeVoiceService:
@@ -63,21 +55,16 @@ class RealtimeVoiceService:
         input_guardrails: list[Guardrail],
         output_guardrails: list[Guardrail],
         model: str,
-        voice_name: str,
-        transcription_model: str,
         greeting: str,
         flush: Callable[[], None] = observability.flush,
     ) -> None:
         self._voice = voice
         self._conversations = conversations
         self._tools = {tool.name: tool for tool in tools}
-        self._specs = realtime_tools(tools)
-        self._instructions = instructions
+        self._spec = VoiceSessionSpec(instructions, tool_specs(tools))
         self._input_guardrails = input_guardrails
         self._output_guardrails = output_guardrails
         self._model = model
-        self._voice_name = voice_name
-        self._transcription_model = transcription_model
         self.greeting = greeting
         self._flush = flush
 
@@ -85,38 +72,10 @@ class RealtimeVoiceService:
         """The voice call a conversation id (a Stream parameter) belongs to, else None."""
         return self._voice.find_call(conversation_id)
 
-    def session_update(self) -> dict[str, Any]:
-        """The `session.update` event that turns a fresh connection into this agent: Twilio's
-        audio format both ways, server-side voice detection (turns only: no automatic response),
-        the agent's prompt and tools. The
-        model is chosen in the connection URL."""
-        return {
-            "type": "session.update",
-            "session": {
-                "type": "realtime",
-                "output_modalities": ["audio"],
-                "audio": {
-                    "input": {
-                        "format": dict(AUDIO_FORMAT),
-                        # The server only detects turns. We create every response ourselves,
-                        # after the input guardrails ran on the transcript (session.py);
-                        # interrupt_response makes the server cancel a reply on barge-in (we
-                        # still send `clear` and `truncate`). UNVERIFIED against a live session:
-                        # the two field names, from the API reference as summarised.
-                        "turn_detection": {
-                            "type": "server_vad",
-                            "create_response": False,
-                            "interrupt_response": True,
-                        },
-                        "transcription": {"model": self._transcription_model},
-                    },
-                    "output": {"format": dict(AUDIO_FORMAT), "voice": self._voice_name},
-                },
-                "instructions": self._instructions,
-                "tools": self._specs,
-                "tool_choice": "auto",
-            },
-        }
+    def session_spec(self) -> VoiceSessionSpec:
+        """The agent as the voice model is configured with it: the text agent's prompt and tools.
+        How the provider turns it into its own session setup is the provider's business."""
+        return self._spec
 
     def check_input(self, text: str) -> GuardrailResult:
         return run_guardrails(self._input_guardrails, text)
