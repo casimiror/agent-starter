@@ -39,7 +39,9 @@ budget in hours).>
   a host where the process keeps running; sandbox or an approved sender, no outbound templates);
   phone calls through Twilio (`VOICE_MODE=relay` ConversationRelay, which needs WebSockets, or
   `gather`, plain webhooks bound by Twilio's ~15 s timeout; Twilio does the speech, one
-  conversation per call, links never read aloud).
+  conversation per call, links never read aloud; or `realtime`, Twilio Media Streams to OpenAI
+  Realtime, where the audio model answers without the agent graph: needs WebSockets and an OpenAI
+  key, and its guardrails act on transcripts, so they are weaker).
   Delete this line if the project only has the web UI.
 
 **Out (and why)**

@@ -6,8 +6,8 @@ in, takes the reply out and says which conversation they belong to. The code of 
 in this template and is tested in CI, but every channel is **off by default** and enabled by
 configuration.
 
-Status: the shared foundation, the WhatsApp channel and the voice channel (relay and gather modes)
-are in place; the `realtime` voice mode comes in a later change.
+Status: the shared foundation, the WhatsApp channel and the voice channel (relay, gather and
+realtime modes) are in place.
 
 ## Enabling a channel
 
@@ -180,15 +180,18 @@ lands on `POST /api/channels/voice/incoming`; `VOICE_MODE` decides how the rest 
 | --- | --- | --- | --- | --- |
 | `relay` (default, recommended) | Twilio ConversationRelay: speech-to-text and text-to-speech, with interruption | a WebSocket (JSON text) | a host that keeps WebSockets open; Voice AI addendum accepted in the console | not on Vercel functions |
 | `gather` | Twilio `<Gather input="speech">` and `<Say>` | one HTTP webhook per turn | nothing but HTTP, so it works on serverless | the whole turn must fit in Twilio's ~15 s webhook timeout; plainer voice, less natural pauses |
-| `realtime` | a speech-to-speech model (OpenAI Realtime) over Twilio Media Streams | a WebSocket (audio) | coming in a later change | |
+| `realtime` | one speech-to-speech model (OpenAI Realtime) that hears and speaks, over Twilio Media Streams | a WebSocket (audio) | a host that keeps WebSockets open; `OPENAI_API_KEY` | not on Vercel functions; the model must handle audio natively; guardrails act on transcripts, weaker than in text (see [Realtime](#realtime)) |
 
 Because Twilio does the speech in `relay` and `gather`, the agent only sees text: Claude and any
-other text-only LLM work unchanged. An unknown `VOICE_MODE` stops the app at startup. The routes of
-the modes that are not selected answer 404.
+other text-only LLM work unchanged. `realtime` replaces the agent graph with an audio model, which
+is why it needs its own section below. An unknown `VOICE_MODE` stops the app at startup. The
+routes of the modes that are not selected answer 404.
 
-Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`, `voice_gather.py`;
-`VoiceService` (`app/services/voice_service.py`), `RelaySession` (`voice_relay.py`), TwiML builders
-(`voice_twiml.py`) and the speech formatter (`voice_format.py`).
+Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`, `voice_gather.py`,
+`voice_realtime.py`; `VoiceService` (`app/services/voice_service.py`), `RelaySession`
+(`voice_relay.py`), `RealtimeSession` and `RealtimeVoiceService` (`voice_realtime.py`,
+`realtime_voice_service.py`), TwiML builders (`voice_twiml.py`) and the speech formatter
+(`voice_format.py`).
 
 ### Setup
 
@@ -207,7 +210,7 @@ Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`,
 
 | Variable | Default | |
 | --- | --- | --- |
-| `VOICE_MODE` | `relay` | `relay` or `gather` |
+| `VOICE_MODE` | `relay` | `relay`, `gather` or `realtime` |
 | `VOICE_LANGUAGE` | `en-US` | speech recognition and voice language (BCP 47) |
 | `VOICE_GREETING` | "Hello, thanks for calling. How can I help you today?" | first thing the caller hears |
 | `VOICE_LINK_PHRASE` | "I can't read links aloud; you'll find it on our website." | said instead of any URL |
@@ -216,6 +219,8 @@ Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`,
 | `VOICE_TTS_PROVIDER` | `ElevenLabs` | relay only: `Google`, `Amazon` or `ElevenLabs` |
 | `VOICE_VOICE` | empty | relay only: the provider's voice name; empty is its default |
 | `VOICE_TRANSCRIPTION_PROVIDER` | `Deepgram` | relay only: `Google` or `Deepgram` |
+
+The `realtime` variables are in [Realtime](#realtime).
 
 Pick a TTS voice that exists for the provider and language: Twilio ends the session on an invalid
 provider/voice combination.
@@ -280,6 +285,157 @@ conversation's creation time).
 links keep their text, headings and list items become sentences, and **every URL is removed** and
 replaced, once at the end of the reply, by `VOICE_LINK_PHRASE`. It cannot invent a URL. In `gather`
 a reply is also cut to 3500 characters at a sentence boundary (`<Say>` rejects more than 4096).
+`realtime` does not use it: the model speaks directly, so no text passes through to format.
+
+### Realtime
+
+`VOICE_MODE=realtime` skips the cascade (speech to text, the agent graph, text to speech) and gives
+the call's audio to a speech-to-speech model, OpenAI Realtime. The model listens and speaks
+directly, which gives the lowest latency and natural interruptions, in exchange for the control the
+graph gives the text channels (below).
+
+```
+ caller's phone            Twilio                          this app                         OpenAI
+ ──────────────        ─────────────        ──────────────────────────────────────    ───────────────
+ speaks  ───────────▶  Media Streams ─────▶ /api/channels/voice/stream (WebSocket)
+                       (mu-law 8 kHz,        RealtimeSession ── input_audio_buffer ──▶  Realtime API
+                        base64 JSON)           │                    .append (as is)      (gpt-realtime-2.1)
+ hears  ◀───────────   media + mark   ◀─────  │  ◀── response.output_audio.delta ───
+                       clear (barge-in)        │
+                                               ├─ tools (the agent's) ◀─ function calls ─▶ run in a thread
+                                               ├─ guardrails on transcripts: cancel + canned reply
+                                               └─ messages table + one Langfuse trace per turn
+```
+
+Audio goes through unchanged: Twilio's mu-law (`audio/pcmu`) is configured as both the input and
+the output format of the model, so nothing is transcoded.
+
+#### Setup
+
+1. As for the other modes: a Twilio number with **Voice**, **A call comes in** pointing at
+   `<PUBLIC_BASE_URL>/api/channels/voice/incoming` (HTTP POST), `CHANNELS=web,voice`,
+   `CHANNEL_ID_SECRET`, `PUBLIC_BASE_URL`, `TWILIO_AUTH_TOKEN`. The ConversationRelay addendum is
+   not needed.
+2. An OpenAI API key with access to the Realtime models in `OPENAI_API_KEY`. It is the key the
+   `openai:` entries of `LLM_FALLBACKS` already use, so there is one place to set and rotate it.
+   The app refuses to start in this mode without it.
+3. `VOICE_MODE=realtime` and, optionally, the variables below.
+4. Locally `make tunnel`; ngrok carries `wss://` too. Call the number and watch
+   http://localhost:4040.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `VOICE_REALTIME_PROVIDER` | `openai` | only `openai` exists. Gemini Live would be another connector behind `RealtimeConnector` (`app/clients/realtime.py`); it is not built |
+| `VOICE_REALTIME_MODEL` | `gpt-realtime-2.1` | `gpt-realtime-2.1-mini` is the cheaper option |
+| `VOICE_REALTIME_VOICE` | `marin` | the model's voice; it can't change once the model has spoken in a call |
+| `VOICE_REALTIME_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | transcribes the caller; the transcript feeds the guardrails and the stored history |
+
+`VOICE_GREETING` is the first thing the caller hears (the model is told to say it word for word);
+`VOICE_LANGUAGE`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` are for
+the other modes and ignored here.
+
+#### What happens in a call
+
+`/incoming` answers `<Connect><Stream url="wss://<host>/api/channels/voice/stream">` with one
+`<Parameter name="conversation_id">` (the URL cannot carry a query string). Twilio then opens the
+WebSocket.
+
+1. **Handshake.** The `wss://` URL is signed like the relay's: verified against `PUBLIC_BASE_URL`
+   with or without a trailing `/`, closed with 1008 before accepting otherwise.
+2. **`start`** binds the session to the conversation (it must exist and be a voice conversation,
+   else the call ends), opens `wss://api.openai.com/v1/realtime?model=...` with the key as a bearer
+   token and sends `session.update`: `audio/pcmu` both ways, server-side voice detection
+   (`server_vad`), input transcription, the voice, **the same prompt file as the text agent as
+   `instructions`** (nothing is added per channel) and **the same tools** (`name`, `description`
+   and the arguments' JSON schema of every tool in `build_assistant_tools`), `tool_choice: auto`.
+   Caller audio is dropped until the model confirms the session (`session.updated`), then the
+   greeting is said.
+3. **Audio.** `media` from Twilio goes to `input_audio_buffer.append` untouched. The model's
+   `response.output_audio.delta` goes back as `media`, each followed by a `mark`. Twilio echoes a
+   mark when that chunk has *played*, which is how the app knows how much of a reply the caller
+   heard (the model produces audio faster than it plays).
+4. **Barge-in.** On `input_audio_buffer.speech_started`, if audio is still queued: Twilio `clear`
+   (drops it) and `conversation.item.truncate` with `audio_end_ms` = the audio actually played, so
+   the model's own memory of what it said matches what the caller heard. The reply's cancellation
+   arrives as `response.cancelled` or as `response.done` with status `cancelled`; either closes it.
+5. **Tools.** On `response.function_call_arguments.done` (or a `function_call` item in
+   `response.done`, deduplicated by `call_id`) the tool runs in a threadpool with
+   `config={"configurable": {"conversation_id": ...}}`, the per-turn context the text agent gives
+   its tools. The result goes back as `conversation.item.create` (`function_call_output`) and then
+   `response.create` once the response that made the call has finished. An unknown tool, unreadable
+   arguments or a failing tool give the model an `UNKNOWN_TOOL:`, `BAD_ARGUMENTS:` or `TOOL_ERROR:`
+   string; they never end the call. Arguments are never logged.
+6. **Guardrails** (below).
+7. **History.** When the caller has heard the reply, or it was cut, the turn is written to
+   `messages` (the caller's transcript, then the assistant's transcript) and traced: one Langfuse
+   trace per turn through `trace_turn`, tagged `channel:voice`, with `tools_called` and
+   `blocked_by` as metadata and the tool results as `context`, then flushed. If the caller
+   interrupted, the stored reply is the part that was played, **estimated** from the share of the
+   audio that played (the transcript has no per-word timing), cut at a word boundary. The greeting
+   is stored as an assistant message.
+8. **End.** After `VOICE_MAX_CALL_SECONDS` both sockets are closed. Twilio's `stop` or a
+   disconnect closes the model's socket; the model's socket closing, a connection failure or a
+   fatal `error` event ends the call. Errors are logged by `type` and `code` only (`message` can
+   quote the caller). Whatever was playing is stored as heard so far.
+
+#### Guardrails on a speech-to-speech model
+
+The same classes and canned texts as the text channels (`assistant_guardrails` in
+`app/agents/assistant_agent.py`), applied to transcripts:
+
+- **Input** guardrails run on each caller transcript (`conversation.item.input_audio_transcription.
+  completed`). On a block the in-flight reply is cancelled (`response.cancel`), Twilio's queue is
+  cleared, the reply is truncated, and the model is told, for that one response, to say exactly the
+  guardrail's canned reply (`response.create` with `instructions`, tools off). The blocked turn is
+  stored with the canned reply.
+- **Output** guardrails run on the reply's transcript as it streams
+  (`response.output_audio_transcript.delta`, only up to the last complete word so a half-written
+  URL is not judged), and once more on the final transcript. On a block: cancel, clear, truncate,
+  canned reply, as above.
+
+**These are weaker than in text channels, and that is inherent.** In text the output is checked
+before the user sees any of it; here the audio is already on its way. Transcription is also
+asynchronous: the caller's transcript often arrives after the model started answering, and the
+reply's transcript trails its audio. So **a few words can be heard before a block takes effect**,
+and the checks only see what the transcript contains (a price said as "five hundred dollars" has
+no `$`). The prompt and the tools' design remain the real boundary; treat these as a second line.
+`format_for_speech` (which removes every URL from a reply) does not apply either: a link the model
+says aloud is caught only if its transcript contains a URL outside `ALLOWED_LINKS`.
+
+#### Costs
+
+OpenAI bills audio tokens. For `gpt-realtime-2.1`, about $32 per million audio input tokens and $64
+per million output tokens, roughly **$0.02 per minute of caller audio and $0.08 per minute of
+assistant audio**; `gpt-realtime-2.1-mini` is about a third of that ($10 / $20 per million). The
+input transcription model is billed separately (`gpt-4o-mini-transcribe`, about $0.003 per
+minute). A 5-minute call with half of it spoken by each side is therefore around $0.25 with the full
+model. Prices change: check OpenAI's pricing page. Twilio's per-minute voice and Media Streams
+charges apply on top, as in the other modes. `VOICE_MAX_CALL_SECONDS` and `RATE_LIMIT_VOICE` bound
+the spend per call and per caller.
+
+#### Limits
+
+- **Needs a WebSocket-capable, long-running host** (a container, a VM): two WebSockets are open for
+  the whole call. Not Vercel functions.
+- **A call lasts at most 60 minutes** on OpenAI's side (a Realtime session limit);
+  `VOICE_MAX_CALL_SECONDS` (default 10 minutes) is the lower bound you set.
+- **The model must handle audio natively.** Claude and other text-only models cannot be used here;
+  `LLM_MODEL` and `LLM_PROVIDER` do not apply to this mode (they still serve the web and WhatsApp).
+  To keep a text model on the phone, use `relay`.
+- **State is per process**: the per-call state lives in the process that holds the WebSocket (it
+  cannot move), and the caller limit counters, as in the other modes, are per process with
+  `memory://`.
+- **History is approximate**: a caller transcript that arrives after its reply has finished is
+  stored with the next turn, and the "heard" part of an interrupted reply is an estimate.
+- The caller's number is not sent to OpenAI (no `OpenAI-Safety-Identifier` header is set, and the
+  stream carries no number) and is not stored or logged; logs hold `visitor_id`, `conversation_id`,
+  `call_sid` and event types, never words.
+- **Not verified against the live services yet**: the exact `session.update` shape, the
+  `error` event's `type`/`code` values and the events used here
+  (`response.output_audio_transcript.delta/done`, `response.function_call_arguments.done`,
+  `response.cancelled`, `session.updated`, `tool_choice` on a per-response `response.create`) are
+  written from OpenAI's reference as summarised, with a fallback or tolerance where the shape was
+  uncertain. A real test call is the first thing to do with an API key.
 
 ### Limits
 

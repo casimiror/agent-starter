@@ -27,7 +27,7 @@ api/routes  ->  services  ->  repositories  ->  db/daos  ->  Postgres
 | DAOs | `app/db/daos/` | One class per table, subclass `BaseDAO[Row]`, each call is its own short transaction | be imported outside repositories |
 | Domain | `app/domain/` | Pydantic models the app passes around | know about SQLAlchemy |
 | Agents | `app/agents/` | `AgentBuilder` composes LLM + prompt + tools + guardrails into a `StateGraph` | inline prompts (they live in `app/agents/prompts/*.md`) |
-| Clients | `app/clients/` | Wrappers of an external API a service calls (`WhatsAppSender` over Twilio's REST API); injected through `deps.py`, they never raise into the caller | hold business rules or be imported by routes |
+| Clients | `app/clients/` | Wrappers of an external API a service calls (`WhatsAppSender` over Twilio's REST API, `OpenAIRealtimeConnector` for the realtime voice WebSocket, behind a small Protocol so tests inject a fake); injected through `deps.py`, they never raise into the caller | hold business rules or be imported by routes |
 | Tools | `app/tools/<area>/` | One file per tool, `build_<name>_tool(deps) -> BaseTool` via `ToolBuilder`; registered in `app/tools/registry.py` | use DAOs or sessions directly |
 | Guardrails | `app/guardrails/` | Pure checks on input/output text; unit-tested | call an LLM (unless stated) |
 | Core | `app/core/` | Settings, LLM factory, rate limiter, observability | depend on routes or services |
@@ -43,8 +43,9 @@ Wiring of concrete classes happens **only** in `app/api/deps.py`.
 | `PUT /api/messages/{id}/feedback` | `{"rating": "up" \| "down"}` | 204; 404 if `id` isn't an assistant message |
 | `DELETE /api/messages/{id}/feedback` | | 204 (idempotent); 404 as above |
 | `POST /api/channels/whatsapp/webhook` | Twilio form (`From`, `To`, `Body`, `MessageSid`, `NumMedia`); only with `whatsapp` in `CHANNELS` | `200` and an empty `<Response/>`; `403` bad signature, `400` missing `From`/`MessageSid`, `413` body over 64 KB |
-| `POST /api/channels/voice/incoming` | Twilio form (`CallSid`, `From`, ...); only with `voice` in `CHANNELS` | TwiML by `VOICE_MODE` (`<Connect><ConversationRelay>` or `<Gather>`), or `<Say>` + `<Hangup/>` over the caller limit; `403`, `400` (no `CallSid`), `413` |
+| `POST /api/channels/voice/incoming` | Twilio form (`CallSid`, `From`, ...); only with `voice` in `CHANNELS` | TwiML by `VOICE_MODE` (`<Connect><ConversationRelay>`, `<Gather>` or `<Connect><Stream>`), or `<Say>` + `<Hangup/>` over the caller limit; `403`, `400` (no `CallSid`), `413` |
 | `WS /api/channels/voice/relay/ws` | Twilio ConversationRelay JSON (`setup`, `prompt`, `interrupt`, `dtmf`, `error`); `VOICE_MODE=relay` | `{"type":"text","token","last":true}` per turn, `{"type":"end"}` at the time limit; handshake with a bad signature closed with 1008 |
+| `WS /api/channels/voice/stream` | Twilio Media Streams JSON (`connected`, `start` with `customParameters.conversation_id`, `media`, `mark`, `dtmf`, `stop`); `VOICE_MODE=realtime` | `media` + `mark` per audio chunk, `clear` on barge-in; handshake with a bad signature closed with 1008; closed at `VOICE_MAX_CALL_SECONDS` |
 | `POST /api/channels/voice/relay/action` | Twilio form (`CallSid`, `SessionStatus`, `ErrorCode`, ...); `relay` | `<Response><Hangup/></Response>`; `403`, `413` |
 | `POST /api/channels/voice/gather?c=<conversation_id>[&r=1]` | Twilio form (`SpeechResult`, `CallSid`); `VOICE_MODE=gather` | `<Gather><Say>reply</Say></Gather>`, or `<Say>` + `<Hangup/>`; `403`, `413` |
 
@@ -130,11 +131,43 @@ without a trailing slash). `VoiceService` (`app/services/voice_service.py`) is w
 4. `gather`: `POST /api/channels/voice/gather?c=<id>` runs the turn inside the webhook and answers
    with the reply and another `<Gather>`; empty speech is re-prompted once, then the call ends.
 
-Adding a mode (PR "realtime"): a value in `Settings.voice_mode`, a builder in `INCOMING`, a router
-gated with `only("<mode>")` included in `voice.py`.
+Adding a mode: a value in `Settings.voice_mode`, a builder in `INCOMING`, a router included in
+`voice.py` and gated to the mode (HTTP routes with `only("<mode>")`, a WebSocket by closing the
+handshake with 1008 when `voice_mode` differs, as `relay` and `realtime` do).
 
 Logs hold `visitor_id`, `conversation_id`, `call_sid`, Twilio error codes and exception types: never
 `From`, `callerName`, the transcript, DTMF digits or the reply.
+
+### A realtime voice call
+
+`VOICE_MODE=realtime` has no agent graph: an audio model answers. `/incoming` returns
+`<Connect><Stream>` and Twilio opens `WS /api/channels/voice/stream`
+(`routes/channels/voice_realtime.py`), which does only HTTP/WebSocket work: verify the handshake
+signature (`handshake_valid`), accept, hand `receive`/`send` to a `RealtimeSession`.
+
+- `RealtimeSession` (`app/services/voice_realtime.py`) is the bridge, with no socket code. On
+  Twilio `start` it loads the call (`VoiceService.find_call`), opens the model connection
+  through a `RealtimeConnector` (`app/clients/realtime.py`, a Protocol; `OpenAIRealtimeConnector`
+  uses `websockets`) and runs two directions in one event loop: Twilio events in, model events in.
+  State per response: audio sent and played (from Twilio `mark` echoes), transcript so far, whether
+  it was cut. Barge-in and guardrail blocks go through one routine (`_clear_playback`): Twilio
+  `clear` plus `conversation.item.truncate` with the played milliseconds.
+- `RealtimeVoiceService` (`app/services/realtime_voice_service.py`) is what the session needs from
+  the app: `session_update()` (the agent's prompt file via `load_prompt`, its tools converted by
+  `realtime_tools`), `check_input` / `check_output` (the lists from `assistant_guardrails`, the
+  same objects the graph is built with), `run_tool` (the tool with `config={"configurable":
+  {"conversation_id": ...}}`, errors as UPPERCASE-coded strings) and `record_turn` (the repository
+  `append` for both messages, one `trace_turn` with the `channel:voice` tag, flush). It blocks, so
+  the session calls it with `asyncio.to_thread`.
+- Wiring in `deps.py`: `get_realtime_connector`, `get_realtime_voice_service`. Tests override both
+  (`tests/realtime_fakes.py`).
+
+A turn is a response (plus its tool follow-ups). It is stored when the caller has heard the reply
+or it was cut, so an interrupted reply is stored as the played part. Guardrails on transcripts are
+weaker than in text (audio may have started): see `docs/channels.md` > Realtime.
+
+Logs add `reason`, event `type` and `code` of OpenAI `error` events and tool names: never
+transcripts, tool arguments or results.
 
 ## Tools
 
@@ -184,10 +217,13 @@ Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` se
 channels beyond the web UI; `create_app` fails at startup on an unknown channel or a missing
 secret/base URL (`docs/channels.md`). With `whatsapp` enabled, `TWILIO_ACCOUNT_SID`,
 `TWILIO_AUTH_TOKEN` are required too, and `RATE_LIMIT_WHATSAPP` (10/minute) limits per sender.
-With `voice` enabled `TWILIO_AUTH_TOKEN` is required; `VOICE_MODE` (`relay` or `gather`; anything
-else stops the app at startup), `VOICE_LANGUAGE`, `VOICE_GREETING`, `VOICE_LINK_PHRASE`,
-`RATE_LIMIT_VOICE` (5/minute per caller), `VOICE_MAX_CALL_SECONDS` and, for `relay`,
-`VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` configure it.
+With `voice` enabled `TWILIO_AUTH_TOKEN` is required; `VOICE_MODE` (`relay`, `gather` or
+`realtime`; anything else stops the app at startup), `VOICE_LANGUAGE`, `VOICE_GREETING`,
+`VOICE_LINK_PHRASE`, `RATE_LIMIT_VOICE` (5/minute per caller), `VOICE_MAX_CALL_SECONDS` and, for
+`relay`, `VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` configure it. With
+`VOICE_MODE=realtime` `OPENAI_API_KEY` is required too (the key `LLM_FALLBACKS` openai entries
+use), plus `VOICE_REALTIME_PROVIDER` (`openai`), `VOICE_REALTIME_MODEL`, `VOICE_REALTIME_VOICE` and
+`VOICE_REALTIME_TRANSCRIPTION_MODEL`.
 `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
 
