@@ -20,7 +20,7 @@ api/routes  ->  services  ->  repositories  ->  db/daos  ->  Postgres
 
 | Layer | Folder | Responsibility | Must not |
 | --- | --- | --- | --- |
-| Routes | `app/api/routes/` | HTTP only: validate with `app/schemas`, rate limit, call a service | contain business logic or touch the DB |
+| Routes | `app/api/routes/` | HTTP and WebSocket only: validate with `app/schemas`, rate limit, call a service | contain business logic or touch the DB |
 | Schemas | `app/schemas/` | Pydantic request/response models (the HTTP contract) | be used below the route layer |
 | Services | `app/services/` | One use case each (`ChatService.handle_turn`): load history, invoke the graph, persist | build agents or open sessions |
 | Repositories | `app/repositories/` | Domain persistence API; combine DAOs; return `app/domain` models | return ORM rows |
@@ -43,6 +43,10 @@ Wiring of concrete classes happens **only** in `app/api/deps.py`.
 | `PUT /api/messages/{id}/feedback` | `{"rating": "up" \| "down"}` | 204; 404 if `id` isn't an assistant message |
 | `DELETE /api/messages/{id}/feedback` | | 204 (idempotent); 404 as above |
 | `POST /api/channels/whatsapp/webhook` | Twilio form (`From`, `To`, `Body`, `MessageSid`, `NumMedia`); only with `whatsapp` in `CHANNELS` | `200` and an empty `<Response/>`; `403` bad signature, `400` missing `From`/`MessageSid`, `413` body over 64 KB |
+| `POST /api/channels/voice/incoming` | Twilio form (`CallSid`, `From`, ...); only with `voice` in `CHANNELS` | TwiML by `VOICE_MODE` (`<Connect><ConversationRelay>` or `<Gather>`), or `<Say>` + `<Hangup/>` over the caller limit; `403`, `400` (no `CallSid`), `413` |
+| `WS /api/channels/voice/relay/ws` | Twilio ConversationRelay JSON (`setup`, `prompt`, `interrupt`, `dtmf`, `error`); `VOICE_MODE=relay` | `{"type":"text","token","last":true}` per turn, `{"type":"end"}` at the time limit; handshake with a bad signature closed with 1008 |
+| `POST /api/channels/voice/relay/action` | Twilio form (`CallSid`, `SessionStatus`, `ErrorCode`, ...); `relay` | `<Response><Hangup/></Response>`; `403`, `413` |
+| `POST /api/channels/voice/gather?c=<conversation_id>[&r=1]` | Twilio form (`SpeechResult`, `CallSid`); `VOICE_MODE=gather` | `<Gather><Say>reply</Say></Gather>`, or `<Say>` + `<Hangup/>`; `403`, `413` |
 
 Limits: `RATE_LIMIT_CHAT` (10/min) and `RATE_LIMIT_FEEDBACK` (30/min) per client IP, counted in
 `RATE_LIMIT_STORAGE_URI` (`memory://` per process by default; a Redis URL makes it global across
@@ -103,6 +107,35 @@ Unlike `/api/chat`, the HTTP response does not carry the reply: Twilio gives a w
 Logs hold `visitor_id`, `message_sid`, Twilio error codes and exception types: never `From`,
 `To`, the text or the reply.
 
+### A voice turn
+
+Every Twilio route first goes through `app/api/twilio_security.py`: a 64 KB body cap and the
+signature check against `PUBLIC_BASE_URL` (for the WebSocket handshake, the `wss://` URL with or
+without a trailing slash). `VoiceService` (`app/services/voice_service.py`) is what the modes share:
+
+1. `POST /api/channels/voice/incoming` -> `VoiceService.start_call(From, CallSid)`:
+   `hit_sender(RATE_LIMIT_VOICE, "voice", visitor_id)`, then `ChannelConversations.start`, a **new**
+   conversation per call (no 24 h reuse). The TwiML comes from `INCOMING[VOICE_MODE]`
+   (`app/services/voice_twiml.py`); it holds only `visitor_id` and `conversation_id`.
+2. A turn is `VoiceService.answer(call, text)`: `ChatService.handle_turn(..., channel="voice")`,
+   then `format_for_speech` (after the output guardrails: strips Markdown, removes every URL and
+   says `VOICE_LINK_PHRASE` once instead), flush of observability. It never raises: a failed turn
+   is a spoken apology. It blocks, so routes call it in a threadpool.
+3. `relay`: `RelaySession` (`app/services/voice_relay.py`) handles Twilio's WebSocket messages with
+   no socket code: `setup` binds the session to the conversation (looked up with
+   `ChannelConversations.find`, which also checks the channel), a final `prompt` runs a turn under
+   a per-call lock and yields one `text` message, `interrupt`/`dtmf`/`error` are logged, and past
+   `VOICE_MAX_CALL_SECONDS` it yields `end`. The route owns the socket and runs a prompt as a task
+   so interrupts are still read during a turn.
+4. `gather`: `POST /api/channels/voice/gather?c=<id>` runs the turn inside the webhook and answers
+   with the reply and another `<Gather>`; empty speech is re-prompted once, then the call ends.
+
+Adding a mode (PR "realtime"): a value in `Settings.voice_mode`, a builder in `INCOMING`, a router
+gated with `only("<mode>")` included in `voice.py`.
+
+Logs hold `visitor_id`, `conversation_id`, `call_sid`, Twilio error codes and exception types: never
+`From`, `callerName`, the transcript, DTMF digits or the reply.
+
 ## Tools
 
 Each project adds its own tools with `/new-tool`, which builds
@@ -150,7 +183,12 @@ Supabase integration), `LANGFUSE_BASE_URL` to `LANGFUSE_HOST`, and `VERCEL=1` se
 `CHANNELS`, `CHANNEL_ID_SECRET`, `PUBLIC_BASE_URL` and `CONVERSATION_WINDOW_HOURS` configure the
 channels beyond the web UI; `create_app` fails at startup on an unknown channel or a missing
 secret/base URL (`docs/channels.md`). With `whatsapp` enabled, `TWILIO_ACCOUNT_SID`,
-`TWILIO_AUTH_TOKEN` are required too, and `RATE_LIMIT_WHATSAPP` (10/minute) limits per sender. `APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
+`TWILIO_AUTH_TOKEN` are required too, and `RATE_LIMIT_WHATSAPP` (10/minute) limits per sender.
+With `voice` enabled `TWILIO_AUTH_TOKEN` is required; `VOICE_MODE` (`relay` or `gather`; anything
+else stops the app at startup), `VOICE_LANGUAGE`, `VOICE_GREETING`, `VOICE_LINK_PHRASE`,
+`RATE_LIMIT_VOICE` (5/minute per caller), `VOICE_MAX_CALL_SECONDS` and, for `relay`,
+`VOICE_TTS_PROVIDER`, `VOICE_VOICE` and `VOICE_TRANSCRIPTION_PROVIDER` configure it.
+`APP_NAME` names the API and the Langfuse evaluation dataset; `ALLOWED_LINKS` lists the URL
 prefixes the agent may write.
 
 ## Resilience

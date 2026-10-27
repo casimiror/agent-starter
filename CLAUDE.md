@@ -24,7 +24,8 @@ Read the relevant document before changing that area. Keep it current in the sam
 
 Python 3.12 · FastAPI (`app.frontend()`) · LangGraph + LangChain v1 · SQLAlchemy 2 + psycopg 3 ·
 Alembic · React 19 + Vite + TypeScript · Langfuse · OpenRouter (any provider via `LLM_PROVIDER`) ·
-Twilio (optional WhatsApp channel, `CHANNELS`) · Docker locally, Vercel + Supabase in production. Do not swap a piece without updating `plan.md`.
+Twilio (optional WhatsApp and voice channels, `CHANNELS`) · Docker locally, Vercel + Supabase in
+production. Do not swap a piece without updating `plan.md`.
 
 ## Workflow
 
