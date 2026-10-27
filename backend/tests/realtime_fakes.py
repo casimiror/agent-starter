@@ -99,8 +99,9 @@ def make_lookup_tool(calls: list | None = None, result: str = "INFO: open 9 to 5
     )
 
 
-def make_realtime_service(tools=None, messages=None, **settings_values):
-    settings = make_settings(voice_mode="realtime", openai_api_key="sk-test", **settings_values)
+def make_realtime_service(tools=None, messages=None, extra_output=(), **settings_values):
+    settings_values.setdefault("voice_mode", "realtime")
+    settings = make_settings(openai_api_key="sk-test", **settings_values)
     voice = make_voice()
     messages = messages or FakeMessages()
     flushed: list[int] = []
@@ -111,15 +112,29 @@ def make_realtime_service(tools=None, messages=None, **settings_values):
         [] if tools is None else tools,
         load_prompt(ASSISTANT_PROMPT),
         inputs,
-        outputs,
+        [*outputs, *extra_output],
         model=settings.voice_realtime_model,
         voice_name=settings.voice_realtime_voice,
         transcription_model=settings.voice_realtime_transcription_model,
         greeting=settings.voice_greeting,
         flush=lambda: flushed.append(1),
     )
+    # Every call to record_turn: (call, user_text, reply, blocked_by, tools_called, context).
+    records: list[tuple] = []
+    original = service.record_turn
+
+    def spy(*args):
+        records.append(args)
+        original(*args)
+
+    service.record_turn = spy
     return SimpleNamespace(
-        service=service, voice=voice, messages=messages, flushed=flushed, settings=settings
+        service=service,
+        voice=voice,
+        messages=messages,
+        flushed=flushed,
+        settings=settings,
+        records=records,
     )
 
 
