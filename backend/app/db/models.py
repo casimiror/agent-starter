@@ -23,10 +23,19 @@ class ConversationRow(TimestampedMixin, Base):
     """Anonymous: a visitor gets an id the first time they write."""
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        CheckConstraint(
+            "channel in ('web', 'whatsapp', 'voice')", name="conversations_channel_check"
+        ),
+        Index("conversations_visitor_channel_created_idx", "visitor_id", "channel", "created_at"),
+    )
 
     # Anonymous browser id (UUID, never PII), the same value Langfuse gets as user_id. Null for
-    # browsers without localStorage.
+    # browsers without localStorage. On other channels it is a keyed hash of the sender.
     visitor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    # Where the conversation happens (docs/channels.md). The server default keeps an old app
+    # version, which doesn't send it, working during a deploy and backfills existing rows as web.
+    channel: Mapped[str] = mapped_column(String(16), nullable=False, server_default="web")
 
 
 class MessageRow(TimestampedMixin, Base):
