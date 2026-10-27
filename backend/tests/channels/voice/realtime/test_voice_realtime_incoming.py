@@ -1,5 +1,5 @@
-from tests.test_voice_incoming import FORM, make_client, parse, post
-from tests.voice_fakes import BASE, CALLER, CALLER_NAME
+from tests.channels.voice.test_voice_incoming import FORM, make_client, parse, post
+from tests.channels.voice.voice_fakes import BASE, CALLER, CALLER_NAME
 
 
 def test_realtime_connects_the_call_to_a_media_stream():

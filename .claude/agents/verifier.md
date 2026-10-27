@@ -18,6 +18,11 @@ Check the diff (`git diff --staged`, or `git diff` if nothing is staged) for:
 4. **Correctness**: wrong LangGraph edges, guardrail that can never trigger, swallowed exceptions,
    history saved before the turn succeeded.
 5. **Tests**: new tool/guardrail without a unit test; tests that call a real LLM.
+6. **Structure**: new or moved files must follow the per-feature folder convention of `CLAUDE.md`
+   and `docs/architecture/backend.md`. Flag loose `<feature>_<thing>.py` files at a layer root when
+   that feature already has a folder; a file in the wrong layer's folder (route code under
+   services, for example); test files that do not mirror the app folders; imports that reach into
+   another channel's folder instead of going through shared code.
 
 Report each finding as `file:line — problem — concrete fix`, most severe first. If nothing is
 wrong, say so in one line. Do not edit files.

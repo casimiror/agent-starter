@@ -1,8 +1,8 @@
 import logging
 from uuid import uuid4
 
-from app.services.voice_service import APOLOGY, NO_ANSWER
-from tests.voice_fakes import CALLER, FakeChat, make_voice
+from app.services.channels.voice.service import APOLOGY, NO_ANSWER
+from tests.channels.voice.voice_fakes import CALLER, FakeChat, make_voice
 
 
 def test_every_call_is_a_new_voice_conversation_for_the_hashed_caller():

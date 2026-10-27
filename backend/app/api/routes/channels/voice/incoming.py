@@ -1,8 +1,8 @@
 """Twilio voice channel: "a call comes in". HTTP only: size cap, signature, caller limit, TwiML.
 
 `/incoming` is common to every `VOICE_MODE`; the mode picks the TwiML it answers with and owns the
-rest of the call (`voice_relay.py`: WebSocket, `voice_gather.py`: webhook per turn,
-`voice_realtime.py`: Media Streams WebSocket).
+rest of the call (`relay.py`: WebSocket, `gather.py`: webhook per turn, `realtime.py`: Media
+Streams WebSocket). `__init__.py` assembles them into the voice router.
 """
 
 import logging
@@ -13,17 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.deps import get_voice_service
-from app.api.routes.channels import voice_gather, voice_realtime, voice_relay
-from app.api.twilio_security import public_url, verified_form
+from app.api.routes.channels.twilio_security import public_url, verified_form
 from app.core.config import Settings, get_settings
-from app.services import voice_twiml
-from app.services.voice_service import VoiceService
+from app.services.channels.voice import twiml as voice_twiml
+from app.services.channels.voice.service import VoiceService
 
 log = logging.getLogger("app.voice")
 router = APIRouter(tags=["voice"])
-router.include_router(voice_relay.router)
-router.include_router(voice_gather.router)
-router.include_router(voice_realtime.router)
 
 # A real caller is E.164: `+` and at least 8 digits. Anything else (empty, "anonymous",
 # "restricted", "unavailable", "unknown", or Twilio's placeholder numbers such as +266696687,

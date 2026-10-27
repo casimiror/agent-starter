@@ -6,9 +6,9 @@ from uuid import UUID
 
 from app.core import observability
 from app.core.rate_limit import hit_sender
-from app.services.channel_conversations import ChannelConversations
+from app.services.channels.conversations import ChannelConversations
+from app.services.channels.voice.format import format_for_speech
 from app.services.chat_service import ChatService
-from app.services.voice_format import format_for_speech
 
 log = logging.getLogger("app.voice")
 

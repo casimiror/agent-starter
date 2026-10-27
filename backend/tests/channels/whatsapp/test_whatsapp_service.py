@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.domain.models import Conversation
-from app.services.channel_conversations import ChannelConversations
-from app.services.whatsapp_service import APOLOGY, SLOW_DOWN, TEXT_ONLY, WhatsAppService
+from app.services.channels.conversations import ChannelConversations
+from app.services.channels.whatsapp.service import APOLOGY, SLOW_DOWN, TEXT_ONLY, WhatsAppService
 
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 USER = "whatsapp:+34600123456"
@@ -256,7 +256,7 @@ def test_a_formatting_failure_sends_the_raw_reply_not_the_apology(monkeypatch):
     def broken(_):
         raise IndexError("boom")
 
-    monkeypatch.setattr("app.services.whatsapp_service.format_for_whatsapp", broken)
+    monkeypatch.setattr("app.services.channels.whatsapp.service.format_for_whatsapp", broken)
     service, _, sender, _, _ = _build(FakeChat("x" * 3000))
     _handle(service)
     assert [len(m["body"]) for m in sender.sent] == [1600]

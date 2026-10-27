@@ -61,6 +61,13 @@ make eval        # evaluate the real agent (LLM calls): local only, never in CI
 
 - Respect the backend layering (`routes -> services -> repositories -> daos`); wiring only in
   `app/api/deps.py`.
+- Each layer (routes, services, clients, tests) groups a feature's or channel's files in a subfolder
+  named after it (`api/routes/channels/<channel>/`, `services/channels/<channel>/`,
+  `tests/channels/<channel>/`). A helper lives in the folder of what it serves (`format`, `twiml`,
+  `session`...), not as a loose `<channel>_<thing>.py` at the layer root; a single-file channel may
+  stay `<channel>.py` until it gets a second file. Shared code goes one level up
+  (`twilio_security.py`, `conversations.py`) or in `core/` if generic. Details:
+  `docs/architecture/backend.md`.
 - The agent states only what its tools return or its prompt says. No invented prices, URLs, names
   or numbers; unknown -> say so or escalate. Every URL it may write is in `ALLOWED_LINKS`.
 - Schema changes only via `app/db/models.py` + a new Alembic revision; never edit an applied one.

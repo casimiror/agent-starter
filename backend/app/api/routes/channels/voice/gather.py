@@ -14,11 +14,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.deps import get_voice_service
-from app.api.routes.channels.voice_modes import only
-from app.api.twilio_security import public_url, verified_form
+from app.api.routes.channels.twilio_security import public_url, verified_form
+from app.api.routes.channels.voice.modes import only
 from app.core.config import Settings, get_settings
-from app.services import voice_twiml
-from app.services.voice_service import VoiceService
+from app.services.channels.voice import twiml as voice_twiml
+from app.services.channels.voice.service import VoiceService
 
 log = logging.getLogger("app.voice")
 router = APIRouter(tags=["voice"], dependencies=[Depends(only("gather"))])

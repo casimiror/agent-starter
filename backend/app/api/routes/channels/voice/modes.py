@@ -2,8 +2,8 @@
 
 Every mode's routes are registered; the ones of the mode that is not selected answer 404, so the
 mode is read per request from the settings (tests and deployments change it without re-importing
-modules). A new mode adds its router in `voice.py` and its entry in `INCOMING`
-(`app/services/voice_twiml.py`)."""
+modules). A new mode adds its router in `voice/__init__.py` and its entry in `INCOMING`
+(`app/services/channels/voice/twiml.py`)."""
 
 from collections.abc import Callable
 from typing import Annotated

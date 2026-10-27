@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.domain.models import Conversation
-from app.services.channel_conversations import ChannelConversations
+from app.services.channels.conversations import ChannelConversations
 
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 PHONE = "whatsapp:+34600123456"

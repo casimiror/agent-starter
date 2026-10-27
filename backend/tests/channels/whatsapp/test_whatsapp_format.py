@@ -1,6 +1,6 @@
 import re
 
-from app.services.whatsapp_format import (
+from app.services.channels.whatsapp.format import (
     ELLIPSIS,
     MAX_MESSAGE_CHARS,
     MAX_MESSAGES,

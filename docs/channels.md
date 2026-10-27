@@ -40,7 +40,7 @@ CONVERSATION_WINDOW_HOURS=24
 
 Every non-web channel does the same three things before calling `ChatService.handle_turn(...,
 channel=<name>)`, so they live once, in `ChannelConversations`
-(`app/services/channel_conversations.py`, no HTTP code):
+(`app/services/channels/conversations.py`, no HTTP code):
 
 | Piece | What it does |
 | --- | --- |
@@ -120,7 +120,7 @@ verifies its provider's signature.
 
 Users write to a WhatsApp number through Twilio; the app answers through the same agent as the web
 UI. Code: route `app/api/routes/channels/whatsapp.py`, `WhatsAppService`
-(`app/services/whatsapp_service.py`), reply formatting (`app/services/whatsapp_format.py`) and the
+(`app/services/channels/whatsapp/service.py`), reply formatting (`format.py` next to it) and the
 Twilio REST wrapper `WhatsAppSender` (`app/clients/whatsapp_sender.py`).
 
 ### Setup with the Twilio sandbox
@@ -203,11 +203,11 @@ other text-only LLM work unchanged. `realtime` replaces the agent graph with an 
 is why it needs its own section below. An unknown `VOICE_MODE` stops the app at startup. The
 routes of the modes that are not selected answer 404.
 
-Code: routes `app/api/routes/channels/voice.py` (`/incoming`), `voice_relay.py`, `voice_gather.py`,
-`voice_realtime.py`; `VoiceService` (`app/services/voice_service.py`), `RelaySession`
-(`voice_relay.py`), `RealtimeSession` and `RealtimeVoiceService` (`voice_realtime.py`,
-`realtime_voice_service.py`), TwiML builders (`voice_twiml.py`) and the speech formatter
-(`voice_format.py`).
+Code: routes in `app/api/routes/channels/voice/` (`incoming.py` for `/incoming`, `relay.py`,
+`gather.py`, `realtime.py`; `__init__.py` assembles the router); services in
+`app/services/channels/voice/`: `VoiceService` (`service.py`), `RelaySession` (`relay.py`), TwiML
+builders (`twiml.py`), the speech formatter (`format.py`) and, in `realtime/`, `RealtimeVoiceService`
+(`service.py`) and `RealtimeSession` (`session.py`). Tests mirror it in `tests/channels/voice/`.
 
 ### Setup
 
@@ -350,7 +350,7 @@ the output format of the model, so nothing is transcoded.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `VOICE_REALTIME_PROVIDER` | `openai` | only `openai` exists. Gemini Live would be another connector behind `RealtimeConnector` (`app/clients/realtime.py`); it is not built |
+| `VOICE_REALTIME_PROVIDER` | `openai` | only `openai` exists. Gemini Live would be another connector behind `RealtimeConnector` (`app/clients/openai_realtime.py`); it is not built |
 | `VOICE_REALTIME_MODEL` | `gpt-realtime-2.1` | `gpt-realtime-2.1-mini` is the cheaper option |
 | `VOICE_REALTIME_VOICE` | `marin` | the model's voice; it can't change once the model has spoken in a call |
 | `VOICE_REALTIME_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | transcribes the caller; the transcript feeds the guardrails and the stored history |
@@ -449,7 +449,7 @@ only): the `create_response` / `interrupt_response` field names, the events
 `input_audio_buffer.committed`, `input_audio_buffer.speech_stopped` and
 `conversation.item.input_audio_transcription.failed`, and the error code
 `conversation_already_has_active_response`. They are marked `UNVERIFIED` in
-`app/services/voice_realtime.py`. Check them with a real call before relying on the behaviour: if
+`app/services/channels/voice/realtime/session.py`. Check them with a real call before relying on the behaviour: if
 no turn-end event arrives, the call would not be answered.
 
 #### Costs

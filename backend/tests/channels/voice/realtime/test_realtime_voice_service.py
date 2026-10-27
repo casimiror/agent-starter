@@ -3,9 +3,14 @@ from uuid import uuid4
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT
 from app.agents.builder import PROMPTS_DIR
-from app.services.realtime_voice_service import realtime_tools
-from tests.realtime_fakes import FakeMessages, LookupArgs, make_lookup_tool, make_realtime_service
-from tests.voice_fakes import CALLER
+from app.services.channels.voice.realtime.service import realtime_tools
+from tests.channels.voice.realtime.realtime_fakes import (
+    FakeMessages,
+    LookupArgs,
+    make_lookup_tool,
+    make_realtime_service,
+)
+from tests.channels.voice.voice_fakes import CALLER
 
 
 def test_session_update_configures_twilio_audio_the_prompt_and_the_tools():

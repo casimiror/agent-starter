@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field
 
 from app.agents.assistant_agent import ASSISTANT_PROMPT, assistant_guardrails
 from app.agents.builder import load_prompt
-from app.clients.realtime import RealtimeError
-from app.services.realtime_voice_service import RealtimeVoiceService
+from app.clients.openai_realtime import RealtimeError
+from app.services.channels.voice.realtime.service import RealtimeVoiceService
 from app.tools.builder import ToolBuilder
-from tests.voice_fakes import make_settings, make_voice
+from tests.channels.voice.voice_fakes import make_settings, make_voice
 
 
 class FakeRealtime:
